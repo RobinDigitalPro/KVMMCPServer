@@ -63,8 +63,6 @@ before successful console tests. Failed screenshot attempts are also retained.
 - Lock/unlock and UAC transitions: predicates are tested, no live secure-desktop
   interaction was performed.
 - Other display layouts/DPI, secondary displays and negative coordinates.
-- VMware mouse capture/release and guest/host transitions.
-- Red Alert 2 menus, drag selection, gameplay, fullscreen and windowed modes.
 - Elevated applications and exclusive-fullscreen/protected-video capture.
 - Power transitions, OS failures, concurrency under Driver Verifier and device
   ACL isolation between Windows users.

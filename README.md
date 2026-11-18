@@ -12,7 +12,7 @@ host. Two official MCP clients shared the controller and received a valid
 1920x1080 PNG. Client disconnect released held Shift within 34 ms in the first
 shared-controller live test. See [acceptance](docs/ACCEPTANCE.md).
 
-This is a development release of [KVMMCPServer](https://github.com/RobinDigitalPro/KVMMCPServer), using the OpenDesktopHID driver. No production-signed driver distribution is provided. VMware/RA2, other displays/DPI and physical
+This is a development release of [KVMMCPServer](https://github.com/RobinDigitalPro/KVMMCPServer), using the OpenDesktopHID driver. No production-signed driver distribution is provided. Other displays/DPI and physical
 hotkey acceptance remain separate tests.
 
 ## Architecture

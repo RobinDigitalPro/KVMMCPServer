@@ -62,6 +62,6 @@ snapshot. Source, dependencies and setup live outside the operational data root.
 
 This version targets the physical console only. It does not implement RDP input,
 secure-desktop interaction, multi-monitor capture, an authenticated remote MCP
-endpoint, or an audited Windows-user device ACL policy. VMware/RA2, display
+endpoint, or an audited Windows-user device ACL policy. Display
 variants, elevated apps, physical takeover and Driver Verifier remain acceptance
 work described in ACCEPTANCE.md.
