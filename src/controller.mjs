@@ -1,0 +1,139 @@
+import { randomUUID } from 'node:crypto';
+import { HidSession } from './session.mjs';
+import { NativeTransport } from './native-transport.mjs';
+import { parseTool } from './tools.mjs';
+
+const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
+export class DesktopController {
+  #session; #transport; #store; #simulated; #stopped; #owner; #clients = new Map(); #captures = new Map(); #lastAction; #timer; #heartbeat; #closing = false; #stopPromise; #reports = 0;
+  constructor({ transport, simulated, store, stopped }) {
+    this.#transport = transport; this.#simulated = simulated; this.#store = store; this.#stopped = stopped;
+    if (transport) this.#session = new HidSession(transport);
+  }
+  static async create({ simulated = false, executable, dataRoot, store, transport } = {}) {
+    const stopped = await store?.stopState() ?? { stopped: false };
+    const controller = new DesktopController({ simulated, store, stopped });
+    if (!stopped.stopped) {
+      controller.#transport = transport ?? (simulated ? { send: async () => { controller.#reports++; } } : new NativeTransport(executable, { dataRoot, onFault: error => { void controller.stop(error.message).catch(() => {}); } }));
+      controller.#session = new HidSession(controller.#transport);
+      await controller.#transport.ready?.();
+      const requested = await store?.stopState();
+      if (requested?.stopped) await controller.stop(requested.reason ?? 'operator_file_request');
+    }
+    controller.#timer = setInterval(() => {
+      void (async () => {
+        if (!controller.#stopped.stopped && store) {
+          const requested = await store.stopState();
+          if (requested.stopped) await controller.stop(requested.reason ?? 'operator_file_request');
+        }
+        await controller.#session?.expire(); await controller.publish();
+      })().catch(error => { void controller.stop(error.message).catch(() => {}); });
+    }, 250); controller.#timer.unref();
+    if (!simulated && controller.#transport) controller.#heartbeat = setInterval(() => {
+      controller.#transport.ping().catch(error => { void controller.stop(error.message).catch(() => {}); });
+    }, 1000);
+    await controller.publish({ event: 'controller_started' });
+    return controller;
+  }
+  attach(label = 'local-agent') { const id = randomUUID(); this.#clients.set(id, String(label).slice(0, 100)); return id; }
+  async detach(client) {
+    for (const capture of this.#captures.values()) if (capture.client === client) capture.abort.abort(new Error('Agent disconnected'));
+    if (this.#owner?.client === client) {
+      const token = this.#owner.token; this.#owner = undefined;
+      await this.#session.release(token).catch(() => {});
+    }
+    this.#clients.delete(client); await this.publish({ event: 'agent_disconnected' });
+  }
+  status() {
+    const native = this.#transport?.status?.();
+    const control = this.#session?.status() ?? { owner: null, leaseRemainingMs: 0, operatorStopped: this.#stopped.stopped, faulted: false };
+    return { version: '0.2.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
+      control: { ...control, operatorStopped: this.#stopped.stopped || (!this.#closing && control.operatorStopped), jobId: control.owner ? this.#owner?.jobId ?? null : null, clientId: control.owner ? this.#owner?.client ?? null : null },
+      operatorStop: this.#stopped, clients: this.#clients.size, activeCaptures: this.#captures.size, lastAction: this.#lastAction ?? null,
+      screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
+  }
+  publish(event) { return this.#store?.publish(this.status(), event) ?? Promise.resolve(); }
+  async stop(reason = 'operator_request') {
+    if (this.#stopPromise) return this.#stopPromise;
+    this.#stopped = { stopped: true, reason: String(reason).slice(0, 300), stoppedUtc: new Date().toISOString() };
+    clearInterval(this.#heartbeat);
+    for (const capture of this.#captures.values()) capture.abort.abort(new Error('Operator stopped desktop control'));
+    // emergencyStop marks the session synchronously, interrupting split input.
+    const release = this.#session?.emergencyStop() ?? Promise.resolve();
+    this.#stopPromise = (async () => {
+      const outcomes = await Promise.allSettled([this.#store?.persistStop(this.#stopped.reason), release]);
+      this.#owner = undefined;
+      await this.publish({ event: 'operator_stop', reason: this.#stopped.reason, released: outcomes[1].status === 'fulfilled' });
+      if (outcomes[0].status === 'rejected') throw outcomes[0].reason;
+      if (outcomes[1].status === 'rejected') throw outcomes[1].reason;
+    })();
+    return this.#stopPromise;
+  }
+  async call(client, name, rawArgs = {}, { signal } = {}) {
+    let action;
+    try {
+      if (!this.#clients.has(client)) throw new Error('Unknown local connection');
+      const args = parseTool(name, rawArgs);
+      if (name === 'hid_status') return result(this.status());
+      if (name === 'hid_emergency_stop') { await this.stop(); return result({ ok: true, operatorStopped: true, persisted: Boolean(this.#store), simulated: this.#simulated }); }
+      if (this.#closing || this.#stopped.stopped) throw new Error('Operator stopped this controller; explicit local operator resume required');
+      signal?.throwIfAborted();
+      if (name === 'hid_acquire') {
+        const lease = await this.#session.acquire(args.owner, args.ttlMs);
+        this.#owner = { client, token: lease.token, jobId: args.jobId ?? null };
+        if (signal?.aborted || !this.#clients.has(client)) {
+          await this.#session.release(lease.token); this.#owner = undefined;
+          throw new Error('Lease acquisition cancelled or connection closed');
+        }
+        await this.publish({ event: 'lease_acquired', owner: args.owner, jobId: args.jobId ?? null, clientId: client });
+        return result({ ...lease, jobId: args.jobId ?? null, simulated: this.#simulated, inputSent: false });
+      }
+      if (this.#owner?.client !== client || this.#owner.token !== args.token) throw new Error('Lease belongs to another connection or is invalid');
+      await this.#session.assertLease(args.token);
+      action = { id: randomUUID(), tool: name, clientId: client, owner: this.#session.status().owner, jobId: this.#owner.jobId, startedUtc: new Date().toISOString(), state: 'running' };
+      this.#lastAction = action;
+      await this.publish({ event: 'action_started', ...action });
+      let response;
+      if (name === 'hid_capture') {
+        if (this.#simulated || !this.#transport.captureAvailable) throw new Error('Screen capture unavailable in this mode');
+        if (this.#captures.size) throw new Error('A capture is already in progress');
+        const abort = new AbortController();
+        const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
+        this.#captures.set(action.id, { client, abort });
+        try {
+          const { data, ...metadata } = await this.#transport.capture({ signal: combined });
+          combined.throwIfAborted();
+          await this.#session.assertLease(args.token);
+          response = { content: [{ type: 'text', text: JSON.stringify(metadata) }, { type: 'image', mimeType: 'image/png', data }] };
+          action.frameId = metadata.frameId;
+        } finally { this.#captures.delete(action.id); }
+      } else if (name === 'hid_release') {
+        await this.#session.release(args.token); this.#owner = undefined;
+      } else {
+        const { token, ...options } = args;
+        const method = { hid_mouse_relative: 'moveRelative', hid_mouse_absolute: 'moveAbsolute', hid_keyboard: 'keyboard' }[name];
+        await this.#session[method](token, options, { signal });
+      }
+      action.state = 'completed'; action.finishedUtc = new Date().toISOString();
+      await this.publish({ event: 'action_finished', ...action });
+      return response ?? result({ ok: true, simulated: this.#simulated, inputSent: !this.#simulated });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (action) { action.state = 'failed'; action.finishedUtc = new Date().toISOString(); action.error = message.slice(0, 300); await this.publish({ event: 'action_finished', ...action }).catch(() => {}); }
+      // Cancellation of input may have a partial effect: release this client's state.
+      if (signal?.aborted && this.#owner?.client === client && this.#owner.token === rawArgs.token) {
+        const token = this.#owner.token; this.#owner = undefined;
+        await this.#session.release(token).catch(() => {});
+      }
+      return { isError: true, content: [{ type: 'text', text: message }] };
+    }
+  }
+  async close() {
+    if (this.#closing) return;
+    this.#closing = true; clearInterval(this.#timer); clearInterval(this.#heartbeat);
+    for (const capture of this.#captures.values()) capture.abort.abort(new Error('Controller shutting down'));
+    await this.#session?.emergencyStop().catch(() => {});
+    await this.#transport?.close?.().catch(() => {});
+    await this.publish({ event: 'controller_stopped' }); await this.#store?.flush();
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "sourceRoot": "C:\\Source\\KVMMCPServer",
+  "dataRoot": "D:\\AgentData\\desktop-hid",
+  "nativeExecutable": "D:\\AgentData\\desktop-hid\\native\\HidTransport.exe",
+  "observerExecutable": "D:\\AgentData\\desktop-hid\\native\\InputObserver.exe",
+  "signedPackage": "D:\\AgentData\\desktop-hid\\driver\\signed-0.1.0",
+  "nodeExecutable": "C:\\Tools\\node.exe",
+  "certificateThumbprint": "REPLACE_WITH_REVIEWED_DEVELOPMENT_CERTIFICATE_THUMBPRINT",
+  "manifestSha256": "REPLACE_WITH_REVIEWED_SIGNED_PACKAGE_MANIFEST_SHA256",
+  "liveEnabled": false,
+  "driverInstalled": false,
+  "mcpVersion": "0.2.0"
+}

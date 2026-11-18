@@ -1,0 +1,25 @@
+{
+  "name": "open-desktop-hid",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Small, independently testable Windows HID controls for local agents",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:reports": "node --test test/reports.test.mjs",
+    "test:session": "node --test test/session.test.mjs",
+    "test:mcp": "node --test test/mcp.test.mjs test/broker.test.mjs",
+    "plan": "node src/cli.mjs plan"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0"
+  }
+}
