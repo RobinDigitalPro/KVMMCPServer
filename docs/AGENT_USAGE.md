@@ -18,7 +18,7 @@ For Codex registration, run the supplied installation script as the normal user:
 .\scripts\Install-McpConnection.ps1 -NodePath C:\Tools\node.exe -NativeExecutable D:\AgentData\desktop-hid\native\HidTransport.exe -DataRoot D:\AgentData\desktop-hid
 ```
 
-It registers the eight tools and leaves the client's approval policy unchanged.
+It registers eleven tools and leaves the client's approval policy unchanged.
 Reload the client MCP connection if its catalog has not refreshed. A terminal
 launch alone does not attach tools to a chat.
 
@@ -40,9 +40,10 @@ launch alone does not attach tools to a chat.
    {"name":"hid_capture","arguments":{"token":"LEASE_TOKEN"}}
    ```
 
-   The response contains PNG content and frame ID, timestamp, primary bounds,
-   session IDs, cursor coordinates and saved path. Cursor position is metadata,
-   not drawn in the image. Lease validity is checked before/after capture.
+   The response contains image content, frame ID, timestamp, bounds, cursor
+   coordinates and saved path. The new capture helper supports PNG/JPEG,
+   downscaling and cursor overlay. With resizing, use sourceWidth/sourceHeight
+   for physical mouse coordinates. Lease validity is checked before/after capture.
 4. Perform one small action; observe the actual result. A successful tool call
    means the transport accepted the request, not that the app completed a task.
 5. Release, including after failure. Leases are not renewed in place.
@@ -96,7 +97,11 @@ viewer separately.
 
 Read live-status.json for active owner/job, last action and native health.
 events.jsonl records action/result metadata without tokens or raw key contents.
-Captures are saved under captures/. These files are in the operational data
+Captures are saved under captures/. Silent MP4 recordings (maximum 600 seconds)
+and JSON receipts go under recordings/. Start a recording with an input lease,
+then release input; the recording remains bound to that MCP connection. See
+[SCREEN_CAPTURE.md](SCREEN_CAPTURE.md) for start/status/stop examples and limits.
+Disconnect and emergency stop also stop recording. These files are in the operational data
 root; the private controller/ directory contains the local endpoint credential
 and stop state and must not be shared with other computers or published.
 

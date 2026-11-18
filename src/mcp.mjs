@@ -8,8 +8,8 @@ import { parseOptions } from './broker.mjs';
 export { tools } from './tools.mjs';
 
 export function createMcpServer(endpoint) {
-  const server = new McpServer({ name: 'open-desktop-hid', version: '0.2.0' }, {
-    instructions: 'Local physical-console desktop control. Acquire a short lease, capture and inspect, perform one small action, verify, and release. Respect operator stop. Owner/job labels are descriptive; do not expose tokens. No RDP backend.',
+  const server = new McpServer({ name: 'open-desktop-hid', version: '0.3.0' }, {
+    instructions: 'Local physical-console desktop control. Acquire a short lease, capture and inspect, perform one small action, verify, and release. Screen recordings are silent MP4, max 600 seconds, connection-bound and independent of input lease release. Stop or inspect a recording with its recordingId. Respect operator stop. Owner/job labels are descriptive; do not expose tokens. No RDP backend or livestream.',
   });
   for (const { name, description, schema, annotations } of definitions) {
     server.registerTool(name, { description, inputSchema: schema, annotations },

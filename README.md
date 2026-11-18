@@ -1,11 +1,12 @@
 # KVMMCPServer
 
 Local Windows desktop control for coding agents: a stdio MCP server, shared
-controller, primary-display screenshots, and a small KMDF/VHF keyboard/mouse
+controller, primary-display screenshots, silent MP4 recordings up to ten minutes,
+and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.2.0** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.3.0** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
@@ -36,6 +37,7 @@ pnpm install --frozen-lockfile --ignore-scripts
 node --test test/reports.test.mjs
 node --test test/session.test.mjs
 node --test test/mcp.test.mjs test/broker.test.mjs
+node --test test/recording.test.mjs
 ```
 
 No ordinary test injects desktop input. Operational data belongs outside source:
@@ -44,7 +46,7 @@ No ordinary test injects desktop input. Operational data belongs outside source:
 .\scripts\Test-Local.ps1 -DataRoot D:\AgentData\desktop-hid -Function all
 ```
 
-The short suite has 31 JavaScript tests and 18 native checks. Stop the live
+The short suite has 39 JavaScript tests and 18 native HID checks. Stop the live
 controller before rebuilding its executable. The driver has a separate portable
 C contract (12 checks), package-validation tests (four cases), and explicit live
 acceptance scripts. Live scripts are never included in the ordinary suite.
@@ -67,10 +69,17 @@ never retried; inspect a fresh frame and acquire a new lease. A new native helpe
 waits 3.5 seconds under its mutex before heartbeats, allowing the installed
 driver's three-second watchdog to clear stale state from a previous helper.
 
-Eight tools: `hid_status`, `hid_capture`, `hid_acquire`, `hid_mouse_relative`,
-`hid_mouse_absolute`, `hid_keyboard`, `hid_release`, `hid_emergency_stop`.
+Eleven tools: `hid_status`, `hid_capture`, `hid_acquire`, `hid_mouse_relative`,
+`hid_mouse_absolute`, `hid_keyboard`, `hid_release`, `hid_emergency_stop`,
+`screen_record_start`, `screen_record_status`, `screen_record_stop`.
 Capture and input require the acquiring connection's token. The owner/job labels
 are descriptive; the controller assigns the connection identity.
+
+For faster PNG/JPEG screenshots and silent H.264/MP4 recordings, build the
+persistent `ScreenCapture.exe` beside the HID helper. Recordings have a native
+**600-second hard limit**, independent of the short input lease, and stop on
+owner disconnect or operator/session stop. See [screen capture and demo
+examples](docs/SCREEN_CAPTURE.md). There is no livestream endpoint.
 
 ```powershell
 node src/manage.mjs status --data-root D:\AgentData\desktop-hid
@@ -91,7 +100,8 @@ three-second watchdog. Native session/hotkey faults also persist a stop.
 `live-status.json` updates approximately four times per second while the
 controller runs. It exposes owner/job, connection count, last action, session,
 native health and persistent stop state. `events.jsonl` records actions/results
-without lease tokens or raw typed keys; PNGs are under `captures/`. A stopped
+without lease tokens or raw typed keys; images are under `captures/`, MP4s and
+recording receipts under `recordings/`. Recording state is included in status. A stopped
 controller leaves a final running=false status. The management command also
 marks an old status as stale.
 
@@ -103,8 +113,9 @@ transfer. Secure-desktop access is outside this version.
 Keyboard usages represent physical keys, not Unicode. Usage 4 produced Q on
 Belgian AZERTY. Relative movement is in HID counts; Windows acceleration can
 alter pixel movement. Absolute coordinates cover 0..32767 on the validated
-primary display. Capture uses GDI and returns cursor coordinates as metadata,
-without drawing the cursor. Multiple monitors, other DPI and exclusive-fullscreen
+primary display. The persistent capture helper uses DXGI, WIC and Media Foundation;
+legacy PNG capture falls back to GDI when it is absent. Resized screenshots include
+source dimensions for coordinate mapping. Multiple monitors, other DPI and exclusive-fullscreen
 or protected content are not validated.
 
 ## Native and driver builds
@@ -115,6 +126,7 @@ or protected content are not validated.
 node scripts/fetch-ewdk.mjs
 # Mount the EWDK ISO read-only and use its actual drive letter:
 .\scripts\Build-Driver.ps1 -EwdkRoot E:\ -OutputDirectory D:\AgentData\desktop-hid\driver
+.\scripts\Build-Capture.ps1 -EwdkRoot E:\ -OutputDirectory D:\AgentData\desktop-hid\native
 ```
 
 The .NET Framework compiler ships with Windows. The x64 driver uses SDK/WDK

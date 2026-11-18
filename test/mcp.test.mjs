@@ -14,7 +14,7 @@ test('official MCP SDK client discovers and calls the real stdio server', async 
   let errors = ''; transport.stderr.on('data', chunk => { errors += chunk; });
   try {
     await client.connect(transport);
-    assert.equal((await client.listTools()).tools.length, 8);
+    assert.equal((await client.listTools()).tools.length, 11);
     const status = text(await client.callTool({ name: 'hid_status', arguments: {} }));
     assert.equal(status.simulated, true);
     const lease = text(await client.callTool({ name: 'hid_acquire', arguments: { owner: 'sdk-test' } }));

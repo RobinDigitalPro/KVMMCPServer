@@ -1,5 +1,35 @@
 # Desktop acceptance
 
+## Screenshots and recording, 0.3.0
+
+On 18 November 2026 the separate user-mode DXGI/WIC/Media Foundation helper
+built with warnings treated as errors. The JavaScript suite has 39 passing
+tests, including recording ownership, input-lease independence, cancellation
+during start, disconnect cleanup, single-recorder exclusion and duration bounds.
+
+Explicit capture-only live tests sent no mouse/keyboard input and verified:
+
+- Full-size 1920x1080 PNG, downscaled JPEG and PNG, with source-coordinate metadata.
+- Warm resized snapshots in roughly 36..83 ms in short host observations;
+  first-process/startup snapshots were approximately 310..330 ms. These are
+  observations on one host, not a general benchmark or latency guarantee.
+- A two-second 1280x720, 15-fps recording finalized with 30 frames, and its MP4
+  decoded back to a visually checked first-frame PNG. Cursor alpha was flattened
+  before scaling to prevent a black cursor rectangle.
+- Early stop of a request configured for 600 seconds.
+- Direct native rejection of 601 seconds, independently of MCP validation.
+- Parent-pipe EOF finalized a partial recording; missing heartbeat stopped and
+  finalized a recording after approximately five seconds from the last ping.
+- Two official SDK clients over stdio and the authenticated local broker saw
+  eleven tools. Actual screenshots/MP4 recording completed; a second connection
+  could not stop the owner's recording. Owner disconnect finalized recording.
+  That isolated harness suppressed HID writes; the active desktop controller
+  serving another chat was not restarted for these capture tests.
+
+The short acceptance uses a two-second deadline; a full ten-minute endurance
+run and lock/UAC/display changes during recording remain separate acceptance.
+No livestream or audio capture was added. Operational evidence stays outside Git.
+
 ## Controller/MCP 0.2.0
 
 The installed kernel driver remains 0.1.0. User-mode controller changes use the

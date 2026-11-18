@@ -88,7 +88,7 @@ Keep that window focused. Test relative movement first, then absolute movement,
 buttons, wheel and keyboard, observing each result independently. Finally test
 release, heartbeat loss and operator takeover before connecting ordinary agents.
 
-Controller/MCP 0.2.0 uses the official SDK and allows several local stdio
+Controller/MCP 0.3.0 uses the official SDK and allows several local stdio
 adapters to share one physical-console controller. Register it explicitly using
 scripts/Install-McpConnection.ps1 and follow [AGENT_USAGE.md](AGENT_USAGE.md).
 The first live adapter can start the shared controller as the normal interactive

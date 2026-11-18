@@ -1,7 +1,7 @@
 # Local controller architecture
 
 The stdio adapter uses the official MCP SDK for message validation, tool schemas,
-protocol compatibility and cancellation. It forwards only the eight declared
+protocol compatibility and cancellation. It forwards only the eleven declared
 desktop tools to a shared local controller. No arbitrary command execution is
 accepted by that controller.
 
@@ -9,7 +9,7 @@ Each adapter has its own internal TCP connection and a server-issued random
 connection ID. A lease binds its opaque token to that connection. Human-readable
 agent, owner and job labels help monitoring; they do not establish identities or
 per-role permissions. All authorized local adapters currently have the same
-eight tools. Windows accounts and the agent's surrounding execution policy
+eleven tools. Windows accounts and the agent's surrounding execution policy
 remain the access boundaries.
 
 The controller binds an ephemeral port on 127.0.0.1 only. Its random 256-bit
@@ -65,3 +65,20 @@ secure-desktop interaction, multi-monitor capture, an authenticated remote MCP
 endpoint, or an audited Windows-user device ACL policy. Display
 variants, elevated apps, physical takeover and Driver Verifier remain acceptance
 work described in ACCEPTANCE.md.
+
+## Screenshot and recording worker (0.3.0)
+
+An optional persistent ScreenCapture.exe, beside the HID helper, owns DXGI
+Desktop Duplication and uses WIC for PNG/JPEG and Media Foundation for H.264/MP4.
+It is an ordinary user-mode child with private stdin/stdout pipes and no network
+listener. No kernel-driver change is involved. See SCREEN_CAPTURE.md.
+
+The controller authorizes recording start with its existing input lease, then
+binds the recording lifecycle to the requesting connection separately from
+input. Releasing/expiring the input lease does not end recording. Only that
+connection can inspect/stop its most recent recording; disconnect, shutdown and
+operator stop terminate it. A pending start is also cleaned up after cancellation.
+The native worker rejects durations above 600 seconds and uses a monotonic
+deadline, session/default-desktop guards, parent EOF detection and a five-second
+heartbeat watchdog. Encoder errors leave explicit finalization state. MP4s and
+JSON receipts are external artifacts; frame data is never put in the event log.

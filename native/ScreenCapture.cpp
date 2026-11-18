@@ -1,0 +1,306 @@
+// MIT. Windows desktop duplication, WIC stills and Media Foundation MP4.
+// User-mode only: no driver, injection, remote endpoint or audio capture.
+#define NOMINMAX
+#include <windows.h>
+#include <wtsapi32.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wincodec.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <wrl/client.h>
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <iomanip>
+
+using Microsoft::WRL::ComPtr;
+using Clock = std::chrono::steady_clock;
+namespace fs = std::filesystem;
+static constexpr int MaximumSeconds = 600;
+
+static void Check(HRESULT value, const char* operation) {
+    if (FAILED(value)) { std::ostringstream text; text << operation << " (0x" << std::hex << static_cast<unsigned long>(value) << ')'; throw std::runtime_error(text.str()); }
+}
+static std::string Utf8(const std::wstring& value) {
+    const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    std::string output(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), output.data(), size, nullptr, nullptr); return output;
+}
+static std::string Json(const std::string& value) {
+    std::ostringstream out; out << '"';
+    for (unsigned char c : value) {
+        if (c == '"' || c == '\\') out << '\\' << c;
+        else if (c < 32) out << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c) << std::dec;
+        else out << c;
+    }
+    out << '"'; return out.str();
+}
+static void Emit(const std::string& value) { std::cout << value << std::endl; }
+static std::string Utc() {
+    SYSTEMTIME now; GetSystemTime(&now); char text[40];
+    sprintf_s(text, "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds); return text;
+}
+static void RequireConsole() {
+    DWORD current = 0; ProcessIdToSessionId(GetCurrentProcessId(), &current);
+    if (current != WTSGetActiveConsoleSessionId()) throw std::runtime_error("console_session_changed");
+    HDESK desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    if (!desktop) throw std::runtime_error("input_desktop_unavailable");
+    wchar_t name[256] = {}; DWORD length = 0;
+    const BOOL ok = GetUserObjectInformationW(desktop, UOI_NAME, name, sizeof(name), &length); CloseDesktop(desktop);
+    if (!ok || _wcsicmp(name, L"Default") != 0) throw std::runtime_error("input_desktop_not_default");
+}
+static int Number(const std::string& text, int minimum, int maximum) {
+    size_t used = 0; const int result = std::stoi(text, &used);
+    if (used != text.size() || result < minimum || result > maximum) throw std::runtime_error("number_out_of_range"); return result;
+}
+static void Identifier(const std::string& value) {
+    if (value.size() != 36 || value.find_first_not_of("0123456789abcdef-") != std::string::npos) throw std::runtime_error("invalid_identifier");
+}
+struct Frame { UINT width = 0, height = 0; std::vector<BYTE> pixels; POINT cursor = {}; bool cursorIncluded = false; };
+
+class Capture {
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<IDXGIOutputDuplication> duplication;
+    ComPtr<ID3D11Texture2D> staging;
+    Frame cached;
+    bool separatePointer = true;
+public:
+    ComPtr<IWICImagingFactory> wic;
+    Capture() { Check(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)), "WIC factory"); }
+    void Reset() { duplication.Reset(); staging.Reset(); context.Reset(); device.Reset(); cached = {}; }
+    void Initialize() {
+        RequireConsole();
+        // Select the primary monitor's adapter, including hybrid-GPU systems.
+        ComPtr<IDXGIFactory1> factory; Check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "DXGI factory");
+        for (UINT a = 0;; ++a) {
+            ComPtr<IDXGIAdapter1> adapter;
+            if (factory->EnumAdapters1(a, &adapter) == DXGI_ERROR_NOT_FOUND) break;
+            for (UINT o = 0;; ++o) {
+                ComPtr<IDXGIOutput> output;
+                if (adapter->EnumOutputs(o, &output) == DXGI_ERROR_NOT_FOUND) break;
+                DXGI_OUTPUT_DESC desc = {}; Check(output->GetDesc(&desc), "output description");
+                if (!desc.AttachedToDesktop || desc.DesktopCoordinates.left != 0 || desc.DesktopCoordinates.top != 0) continue;
+                MONITORINFO info = { sizeof(MONITORINFO) };
+                if (!GetMonitorInfoW(desc.Monitor, &info) || !(info.dwFlags & MONITORINFOF_PRIMARY)) continue;
+                Check(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context), "D3D device");
+                ComPtr<IDXGIOutput1> modern; Check(output.As(&modern), "DXGI output");
+                Check(modern->DuplicateOutput(device.Get(), &duplication), "desktop duplication");
+                return;
+            }
+        }
+        throw std::runtime_error("primary_display_unavailable");
+    }
+    Frame Grab(bool cursor) {
+        RequireConsole();
+        if (!duplication) Initialize();
+        ComPtr<IDXGIResource> resource; DXGI_OUTDUPL_FRAME_INFO info = {};
+        HRESULT hr = duplication->AcquireNextFrame(cached.pixels.empty() ? 1000 : 0, &info, &resource);
+        if (hr == DXGI_ERROR_ACCESS_LOST) { Reset(); throw std::runtime_error("display_configuration_changed"); }
+        if (hr != DXGI_ERROR_WAIT_TIMEOUT) {
+            Check(hr, "acquire desktop frame");
+            try {
+                if (info.LastMouseUpdateTime.QuadPart != 0) separatePointer = info.PointerPosition.Visible != FALSE;
+                ComPtr<ID3D11Texture2D> texture; Check(resource.As(&texture), "desktop texture");
+                D3D11_TEXTURE2D_DESC desc; texture->GetDesc(&desc);
+                DXGI_OUTDUPL_DESC outputDesc; duplication->GetDesc(&outputDesc);
+                if (outputDesc.Rotation != DXGI_MODE_ROTATION_IDENTITY && outputDesc.Rotation != DXGI_MODE_ROTATION_UNSPECIFIED) throw std::runtime_error("rotated_display_not_supported");
+                if (!staging || cached.width != desc.Width || cached.height != desc.Height) {
+                    desc.BindFlags = 0; desc.MiscFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.Usage = D3D11_USAGE_STAGING;
+                    staging.Reset(); Check(device->CreateTexture2D(&desc, nullptr, &staging), "staging texture");
+                    cached.width = desc.Width; cached.height = desc.Height; cached.pixels.resize(static_cast<size_t>(desc.Width) * desc.Height * 4);
+                }
+                context->CopyResource(staging.Get(), texture.Get());
+                D3D11_MAPPED_SUBRESOURCE mapped; Check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "map desktop texture");
+                for (UINT y = 0; y < cached.height; ++y) memcpy(cached.pixels.data() + static_cast<size_t>(y) * cached.width * 4, static_cast<const BYTE*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch, cached.width * 4);
+                context->Unmap(staging.Get(), 0);
+            } catch (...) { duplication->ReleaseFrame(); throw; }
+            Check(duplication->ReleaseFrame(), "release desktop frame");
+        }
+        RequireConsole();
+        if (cached.pixels.empty()) throw std::runtime_error("desktop_frame_unavailable");
+        Frame frame = cached; GetCursorPos(&frame.cursor);
+        if (cursor && !separatePointer) frame.cursorIncluded = true;
+        if (cursor && separatePointer) {
+            CURSORINFO pointer = { sizeof(CURSORINFO) };
+            // Desktop duplication may already include a hardware-composited pointer.
+            if (GetCursorInfo(&pointer) && (pointer.flags & CURSOR_SHOWING)) {
+                ICONINFO icon = {};
+                if (GetIconInfo(pointer.hCursor, &icon)) {
+                    BITMAPINFO bitmap = {}; bitmap.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bitmap.bmiHeader.biWidth = frame.width; bitmap.bmiHeader.biHeight = -static_cast<LONG>(frame.height); bitmap.bmiHeader.biPlanes = 1; bitmap.bmiHeader.biBitCount = 32; bitmap.bmiHeader.biCompression = BI_RGB;
+                    void* pixels = nullptr; HBITMAP dib = CreateDIBSection(nullptr, &bitmap, DIB_RGB_COLORS, &pixels, nullptr, 0); HDC dc = CreateCompatibleDC(nullptr);
+                    if (dib && dc && pixels) { HGDIOBJ old = SelectObject(dc, dib); memcpy(pixels, frame.pixels.data(), frame.pixels.size()); DrawIconEx(dc, pointer.ptScreenPos.x - icon.xHotspot, pointer.ptScreenPos.y - icon.yHotspot, pointer.hCursor, 0, 0, 0, nullptr, DI_NORMAL); GdiFlush(); memcpy(frame.pixels.data(), pixels, frame.pixels.size()); SelectObject(dc, old); frame.cursorIncluded = true; }
+                    if (dc) DeleteDC(dc); if (dib) DeleteObject(dib); if (icon.hbmMask) DeleteObject(icon.hbmMask); if (icon.hbmColor) DeleteObject(icon.hbmColor);
+                }
+            }
+        }
+        // GDI cursor drawing can clear alpha in the icon rectangle. Make the
+        // desktop opaque before WIC scaling, otherwise the cursor scales black.
+        for (size_t i = 3; i < frame.pixels.size(); i += 4) frame.pixels[i] = 255;
+        return frame;
+    }
+    Frame Scale(const Frame& frame, UINT width, bool even) {
+        Frame result = frame;
+        result.width = width ? std::min(width, frame.width) : frame.width;
+        result.height = static_cast<UINT>(static_cast<uint64_t>(frame.height) * result.width / frame.width);
+        if (even) { result.width &= ~1U; result.height &= ~1U; }
+        if (result.width < 2 || result.height < 2) throw std::runtime_error("invalid_frame_dimensions");
+        if (result.width == frame.width && result.height == frame.height) return result;
+        ComPtr<IWICBitmap> bitmap; Check(wic->CreateBitmapFromMemory(frame.width, frame.height, GUID_WICPixelFormat32bppBGRA, frame.width * 4, static_cast<UINT>(frame.pixels.size()), const_cast<BYTE*>(frame.pixels.data()), &bitmap), "scale source");
+        ComPtr<IWICBitmapScaler> scaler; Check(wic->CreateBitmapScaler(&scaler), "image scaler"); Check(scaler->Initialize(bitmap.Get(), result.width, result.height, WICBitmapInterpolationModeFant), "scale frame");
+        result.pixels.resize(static_cast<size_t>(result.width) * result.height * 4); Check(scaler->CopyPixels(nullptr, result.width * 4, static_cast<UINT>(result.pixels.size()), result.pixels.data()), "scaled pixels"); return result;
+    }
+    void Save(const Frame& frame, const fs::path& path, bool jpeg) {
+        if (fs::exists(path)) throw std::runtime_error("output_already_exists");
+        ComPtr<IWICStream> stream; Check(wic->CreateStream(&stream), "image stream"); Check(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE), "image output");
+        ComPtr<IWICBitmapEncoder> encoder; Check(wic->CreateEncoder(jpeg ? GUID_ContainerFormatJpeg : GUID_ContainerFormatPng, nullptr, &encoder), "image encoder"); Check(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache), "initialize image encoder");
+        ComPtr<IWICBitmapFrameEncode> output; ComPtr<IPropertyBag2> properties; Check(encoder->CreateNewFrame(&output, &properties), "image frame");
+        if (jpeg) { PROPBAG2 option = {}; option.pstrName = const_cast<wchar_t*>(L"ImageQuality"); VARIANT value; VariantInit(&value); value.vt = VT_R4; value.fltVal = 0.85f; Check(properties->Write(1, &option, &value), "JPEG quality"); }
+        Check(output->Initialize(properties.Get()), "initialize image frame"); Check(output->SetSize(frame.width, frame.height), "image dimensions");
+        WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR; Check(output->SetPixelFormat(&format), "image pixel format");
+        ComPtr<IWICBitmap> bitmap; Check(wic->CreateBitmapFromMemory(frame.width, frame.height, GUID_WICPixelFormat32bppBGRA, frame.width * 4, static_cast<UINT>(frame.pixels.size()), const_cast<BYTE*>(frame.pixels.data()), &bitmap), "image bitmap");
+        ComPtr<IWICFormatConverter> converter; Check(wic->CreateFormatConverter(&converter), "pixel converter"); Check(converter->Initialize(bitmap.Get(), format, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom), "convert pixels");
+        Check(output->WriteSource(converter.Get(), nullptr), "write image"); Check(output->Commit(), "commit frame"); Check(encoder->Commit(), "commit image");
+    }
+};
+
+class Recording {
+public:
+    ComPtr<IMFSinkWriter> writer; DWORD stream = 0;
+    std::string id, startedUtc; fs::path partial, final;
+    Clock::time_point start, next; int seconds = 0, fps = 0, maxWidth = 0, bitrate = 0;
+    UINT width = 0, height = 0, sourceWidth = 0, sourceHeight = 0; unsigned long frames = 0; LONGLONG mediaEnd = 0;
+    bool active() const { return writer != nullptr; }
+    void Begin(Capture& capture, const fs::path& root, const std::string& identity, int duration, int rate, int size, int bits) {
+        if (active()) throw std::runtime_error("recording_already_active");
+        Identifier(identity); if (duration < 1 || duration > MaximumSeconds) throw std::runtime_error("recording_limit_600_seconds");
+        Frame source = capture.Grab(true), first = capture.Scale(source, size, true);
+        id = identity; seconds = duration; fps = rate; maxWidth = size; bitrate = bits; width = first.width; height = first.height; sourceWidth = source.width; sourceHeight = source.height;
+        frames = 0; mediaEnd = 0; partial = root / L"recordings" / fs::u8path(id + ".partial.mp4"); final = root / L"recordings" / fs::u8path(id + ".mp4");
+        fs::create_directories(partial.parent_path()); if (fs::exists(partial) || fs::exists(final)) throw std::runtime_error("output_already_exists");
+        ComPtr<IMFAttributes> attributes; Check(MFCreateAttributes(&attributes, 3), "encoder attributes");
+        Check(attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE), "hardware transforms");
+        Check(attributes->SetUINT32(MF_SINK_WRITER_DISABLE_THROTTLING, TRUE), "encoder throttling");
+        Check(MFCreateSinkWriterFromURL(partial.c_str(), nullptr, attributes.Get(), &writer), "MP4 sink writer");
+        try {
+            ComPtr<IMFMediaType> output; Check(MFCreateMediaType(&output), "output type");
+            Check(output->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video), "output video"); Check(output->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264), "H264");
+            Check(output->SetUINT32(MF_MT_AVG_BITRATE, bitrate), "bitrate"); Check(output->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive), "interlace");
+            Check(MFSetAttributeSize(output.Get(), MF_MT_FRAME_SIZE, width, height), "output size"); Check(MFSetAttributeRatio(output.Get(), MF_MT_FRAME_RATE, fps, 1), "output rate"); Check(MFSetAttributeRatio(output.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1), "output aspect");
+            Check(writer->AddStream(output.Get(), &stream), "add video stream");
+            ComPtr<IMFMediaType> input; Check(MFCreateMediaType(&input), "input type"); Check(input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video), "input video"); Check(input->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32), "RGB32");
+            Check(input->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive), "input interlace"); Check(MFSetAttributeSize(input.Get(), MF_MT_FRAME_SIZE, width, height), "input size"); Check(MFSetAttributeRatio(input.Get(), MF_MT_FRAME_RATE, fps, 1), "input rate"); Check(MFSetAttributeRatio(input.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1), "input aspect");
+            Check(input->SetUINT32(MF_MT_DEFAULT_STRIDE, width * 4), "input stride"); Check(writer->SetInputMediaType(stream, input.Get(), nullptr), "encoder input"); Check(writer->BeginWriting(), "begin recording");
+            first = capture.Scale(capture.Grab(true), maxWidth, true);
+            start = Clock::now(); next = start; startedUtc = Utc(); Write(first, 0); next += std::chrono::microseconds(1000000 / fps);
+        } catch (...) { writer.Reset(); throw; }
+    }
+    void Write(const Frame& frame, LONGLONG timestamp) {
+        if (frame.width != width || frame.height != height) throw std::runtime_error("display_dimensions_changed");
+        ComPtr<IMFMediaBuffer> buffer; const DWORD bytes = static_cast<DWORD>(frame.pixels.size()); Check(MFCreateMemoryBuffer(bytes, &buffer), "video buffer");
+        BYTE* data = nullptr; Check(buffer->Lock(&data, nullptr, nullptr), "lock video buffer"); memcpy(data, frame.pixels.data(), bytes); Check(buffer->Unlock(), "unlock video buffer"); Check(buffer->SetCurrentLength(bytes), "video buffer length");
+        ComPtr<IMFSample> sample; Check(MFCreateSample(&sample), "video sample"); Check(sample->AddBuffer(buffer.Get()), "sample buffer"); Check(sample->SetSampleTime(timestamp), "sample time");
+        const LONGLONG duration = std::min<LONGLONG>(10000000 / fps, static_cast<LONGLONG>(seconds) * 10000000 - timestamp);
+        if (duration <= 0) return;
+        Check(sample->SetSampleDuration(duration), "sample duration"); Check(writer->WriteSample(stream, sample.Get()), "encode video sample"); mediaEnd = timestamp + duration; ++frames;
+    }
+    std::string Status(const char* state, const std::string& reason = "") const {
+        std::ostringstream out; out << "\"recordingId\":" << Json(id) << ",\"state\":" << Json(state) << ",\"reason\":" << Json(reason) << ",\"startedUtc\":" << Json(startedUtc) << ",\"maxSeconds\":" << seconds << ",\"fps\":" << fps << ",\"width\":" << width << ",\"height\":" << height << ",\"frames\":" << frames << ",\"durationMs\":" << mediaEnd / 10000 << ",\"path\":" << Json(Utf8(final.wstring())) << ",\"partialPath\":" << Json(Utf8(partial.wstring())) << ",\"audio\":false,\"cursorIncludedInImage\":true"; return out.str();
+    }
+    void Finish(const char* state, const std::string& reason) {
+        if (!active()) return;
+        HRESULT hr = writer->Finalize(); writer.Reset();
+        try { Check(hr, "finalize MP4"); fs::rename(partial, final); Emit("{\"type\":\"recording_finished\"," + Status(state, reason) + ",\"finishedUtc\":" + Json(Utc()) + ",\"finalized\":true}"); }
+        catch (const std::exception& error) { Emit("{\"type\":\"recording_finished\"," + Status("failed", error.what()) + ",\"finishedUtc\":" + Json(Utc()) + ",\"finalized\":false}"); }
+    }
+};
+
+int wmain(int argc, wchar_t** argv) {
+    if (argc == 4 && std::wstring(argv[1]) == L"inspect") {
+        try {
+            Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
+            ComPtr<IMFAttributes> attributes; Check(MFCreateAttributes(&attributes, 1), "decoder attributes"); Check(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE), "decoder color conversion");
+            ComPtr<IMFSourceReader> reader; Check(MFCreateSourceReaderFromURL(argv[2], attributes.Get(), &reader), "open recorded video");
+            const DWORD videoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), mediaSource = static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE);
+            ComPtr<IMFMediaType> type; Check(MFCreateMediaType(&type), "decode type"); Check(type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video), "decode video"); Check(type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32), "decode RGB");
+            Check(reader->SetCurrentMediaType(videoStream, nullptr, type.Get()), "decode format");
+            Check(reader->GetCurrentMediaType(videoStream, &type), "decoded type"); UINT width, height; Check(MFGetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, &width, &height), "decoded dimensions");
+            PROPVARIANT duration; PropVariantInit(&duration); Check(reader->GetPresentationAttribute(mediaSource, MF_PD_DURATION, &duration), "video duration");
+            ComPtr<IMFSample> sample; DWORD flags = 0; LONGLONG timestamp = 0;
+            for (int n = 0; n < 100 && !sample; ++n) { Check(reader->ReadSample(videoStream, 0, nullptr, &flags, &timestamp, &sample), "decode first frame"); if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break; }
+            if (!sample) throw std::runtime_error("video_has_no_decodable_frame");
+            ComPtr<IMFMediaBuffer> buffer; Check(sample->ConvertToContiguousBuffer(&buffer), "decoded buffer"); BYTE* data = nullptr; DWORD length = 0; Check(buffer->Lock(&data, nullptr, &length), "lock decoded pixels");
+            Frame frame; frame.width = width; frame.height = height; frame.pixels.resize(static_cast<size_t>(width) * height * 4);
+            if (length < frame.pixels.size()) { buffer->Unlock(); throw std::runtime_error("decoded_frame_too_small"); }
+            memcpy(frame.pixels.data(), data, frame.pixels.size()); buffer->Unlock(); Capture capture; capture.Save(frame, fs::path(argv[3]), false);
+            Emit("{\"ok\":true,\"decoded\":true,\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) + ",\"durationMs\":" + std::to_string(duration.uhVal.QuadPart / 10000) + "}"); PropVariantClear(&duration); return 0;
+        } catch (const std::exception& error) { Emit("{\"ok\":false,\"error\":" + Json(error.what()) + "}"); return 1; }
+    }
+    if (argc != 4 || std::wstring(argv[1]) != L"serve" || std::wstring(argv[2]) != L"--data-root") { std::cerr << "Usage: ScreenCapture.exe serve --data-root ABSOLUTE_DATA_ROOT\n"; return 2; }
+    fs::path root = argv[3]; if (!root.is_absolute()) return 2;
+    try {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
+        Capture capture; Recording recording;
+        Emit("{\"type\":\"ready\",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600}");
+        HANDLE input = GetStdHandle(STD_INPUT_HANDLE); std::string pending; bool quitting = false; auto lastPing = Clock::now(), progress = lastPing;
+        while (!quitting) {
+            DWORD available = 0;
+            if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr)) { recording.Finish("interrupted", "parent_disconnected"); break; }
+            if (available) {
+                char bytes[4096]; DWORD received = 0;
+                if (!ReadFile(input, bytes, std::min<DWORD>(available, sizeof(bytes)), &received, nullptr) || !received) break;
+                pending.append(bytes, received); if (pending.size() > 8192) throw std::runtime_error("command_too_large");
+            }
+            size_t newline;
+            while ((newline = pending.find('\n')) != std::string::npos) {
+                const std::string line = pending.substr(0, newline); pending.erase(0, newline + 1); std::istringstream in(line); std::vector<std::string> args; std::string part;
+                while (std::getline(in, part, '\t')) args.push_back(part);
+                int request = 0;
+                try {
+                    if (args.size() < 2) throw std::runtime_error("invalid_command"); request = Number(args[1], 1, 2147483647); const std::string op = args[0];
+                    if (op == "ping" && args.size() == 2) { lastPing = Clock::now(); Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}"); continue; }
+                    if (op == "quit" && args.size() == 2) { recording.Finish("interrupted", "controller_shutdown"); quitting = true; }
+                    else if (op == "stop" && args.size() == 2) recording.Finish("stopped", "requested");
+                    else if (op == "record" && args.size() == 7) {
+                        RequireConsole(); recording.Begin(capture, root, args[2], Number(args[3], 1, MaximumSeconds), Number(args[4], 1, 30), Number(args[5], 0, 3840), Number(args[6], 1000000, 20000000));
+                        Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true," + recording.Status("recording") + "}"); continue;
+                    } else if (op == "snapshot" && args.size() == 6) {
+                        Identifier(args[2]); const bool jpeg = args[3] == "jpeg"; if (!jpeg && args[3] != "png") throw std::runtime_error("invalid_image_format");
+                        Frame source = capture.Grab(Number(args[5], 0, 1) != 0); const std::string capturedUtc = Utc(); Frame frame = capture.Scale(source, Number(args[4], 0, 3840), false);
+                        const fs::path output = root / L"captures" / fs::u8path(args[2] + (jpeg ? ".jpg" : ".png")); fs::create_directories(output.parent_path()); capture.Save(frame, output, jpeg); RequireConsole();
+                        DWORD session = 0; ProcessIdToSessionId(GetCurrentProcessId(), &session);
+                        std::ostringstream out; out << "{\"id\":" << request << ",\"ok\":true,\"frameId\":" << Json(args[2]) << ",\"path\":" << Json(Utf8(output.wstring())) << ",\"capturedUtc\":" << Json(capturedUtc) << ",\"currentSession\":" << session << ",\"consoleSession\":" << WTSGetActiveConsoleSessionId() << ",\"display\":\"primary\",\"left\":0,\"top\":0,\"width\":" << frame.width << ",\"height\":" << frame.height << ",\"sourceWidth\":" << source.width << ",\"sourceHeight\":" << source.height << ",\"cursor\":{\"x\":" << source.cursor.x << ",\"y\":" << source.cursor.y << "},\"cursorIncludedInImage\":" << (frame.cursorIncluded ? "true" : "false") << ",\"mimeType\":" << Json(jpeg ? "image/jpeg" : "image/png") << ",\"inputSent\":false}"; Emit(out.str()); continue;
+                    } else throw std::runtime_error("invalid_command");
+                    Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}");
+                } catch (const std::exception& error) { Emit("{\"id\":" + std::to_string(request) + ",\"ok\":false,\"error\":" + Json(error.what()) + "}"); }
+            }
+            if (recording.active()) {
+                try {
+                    RequireConsole(); const auto now = Clock::now();
+                    if (now - lastPing > std::chrono::seconds(5)) recording.Finish("interrupted", "controller_heartbeat_lost");
+                    else if (now - recording.start >= std::chrono::seconds(recording.seconds)) recording.Finish("completed", "duration_limit");
+                    else if (now >= recording.next) {
+                        Frame source = capture.Grab(true); if (source.width != recording.sourceWidth || source.height != recording.sourceHeight) throw std::runtime_error("display_dimensions_changed");
+                        const LONGLONG time = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - recording.start).count() * 10;
+                        if (time < static_cast<LONGLONG>(recording.seconds) * 10000000) recording.Write(capture.Scale(source, recording.maxWidth, true), time);
+                        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - recording.start).count();
+                        const auto interval = 1000000 / recording.fps;
+                        recording.next = recording.start + std::chrono::microseconds((elapsed / interval + 1) * interval);
+                    }
+                    if (recording.active() && now - progress >= std::chrono::seconds(1)) { Emit("{\"type\":\"recording_progress\"," + recording.Status("recording") + "}"); progress = now; }
+                } catch (const std::exception& error) { recording.Finish("interrupted", error.what()); capture.Reset(); }
+            }
+            Sleep(5);
+        }
+        recording.Finish("interrupted", "parent_disconnected");
+        return 0;
+    } catch (const std::exception& error) { Emit("{\"type\":\"fatal\",\"error\":" + Json(error.what()) + "}"); return 1; }
+}

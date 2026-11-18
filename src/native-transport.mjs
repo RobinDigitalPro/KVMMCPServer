@@ -4,9 +4,12 @@ import { validateReport } from './reports.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { CaptureWorker } from './capture-worker.mjs';
 
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
+  #captureWorker; #recordingListeners = new Set();
   constructor(executable, { dataRoot, onFault = () => {} } = {}) {
     if (typeof executable !== 'string' || !executable) throw new TypeError('native executable path required');
     if (dataRoot && !path.isAbsolute(dataRoot)) throw new TypeError('capture dataRoot must be absolute');
@@ -47,9 +50,25 @@ export class NativeTransport {
   }
   status() { return { connected: Boolean(this.#metadata) && !this.#fatal && this.#child.exitCode === null, ...this.#metadata, ...(this.#fatal ? { error: this.#fatal.message } : {}) }; }
   get captureAvailable() { return Boolean(this.#dataRoot); }
-  async capture({ signal } = {}) {
+  get recordingAvailable() { return Boolean(this.#dataRoot && existsSync(path.join(path.dirname(this.#executable), 'ScreenCapture.exe'))); }
+  #screen() {
+    if (this.#fatal || this.#closing) throw this.#fatal ?? new Error('Native transport is closed');
+    if (!this.recordingAvailable) throw new Error('Build/install ScreenCapture.exe beside HidTransport.exe to enable recording');
+    if (!this.#captureWorker) {
+      this.#captureWorker = new CaptureWorker(path.join(path.dirname(this.#executable), 'ScreenCapture.exe'), this.#dataRoot);
+      this.#captureWorker.on('fault', error => { if (!this.#closing) this.#onFault(error); });
+      this.#captureWorker.on('recording', metadata => { for (const listener of this.#recordingListeners) listener(metadata); });
+    }
+    return this.#captureWorker;
+  }
+  onRecording(listener) { this.#recordingListeners.add(listener); return () => this.#recordingListeners.delete(listener); }
+  startRecording(options) { return this.#screen().startRecording(options); }
+  stopRecording() { return this.#captureWorker?.stopRecording() ?? Promise.resolve(null); }
+  async capture({ signal, ...options } = {}) {
     if (!this.#dataRoot) throw new Error('Capture requires an external --data-root configuration');
     if (this.#fatal) throw this.#fatal;
+    if (this.recordingAvailable) return this.#screen().snapshot({ ...options, signal });
+    if (options.format === 'jpeg' || options.maxWidth || options.includeCursor === true) throw new Error('Extended snapshots require ScreenCapture.exe');
     signal?.throwIfAborted();
     const frameId = randomUUID();
     const folder = path.join(this.#dataRoot, 'captures'); await fs.mkdir(folder, { recursive: true });
@@ -87,6 +106,7 @@ export class NativeTransport {
   ping() { return this.#request('ping'); }
   async close() {
     this.#closing = true;
+    await this.#captureWorker?.close().catch(() => {});
     if (!this.#fatal) {
       try { await this.#request('release'); } finally { this.#child.stdin.end(); }
     }

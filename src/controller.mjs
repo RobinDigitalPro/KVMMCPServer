@@ -6,6 +6,7 @@ import { parseTool } from './tools.mjs';
 const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 export class DesktopController {
   #session; #transport; #store; #simulated; #stopped; #owner; #clients = new Map(); #captures = new Map(); #lastAction; #timer; #heartbeat; #closing = false; #stopPromise; #reports = 0;
+  #recording; #recordingCleanup;
   constructor({ transport, simulated, store, stopped }) {
     this.#transport = transport; this.#simulated = simulated; this.#store = store; this.#stopped = stopped;
     if (transport) this.#session = new HidSession(transport);
@@ -17,6 +18,12 @@ export class DesktopController {
       controller.#transport = transport ?? (simulated ? { send: async () => { controller.#reports++; } } : new NativeTransport(executable, { dataRoot, onFault: error => { void controller.stop(error.message).catch(() => {}); } }));
       controller.#session = new HidSession(controller.#transport);
       await controller.#transport.ready?.();
+      controller.#recordingCleanup = controller.#transport.onRecording?.(metadata => {
+        if (controller.#recording?.recordingId === metadata.recordingId) {
+          controller.#recording = { ...controller.#recording, ...metadata };
+          void controller.publish({ event: 'recording_state', recordingId: metadata.recordingId, state: metadata.state }).catch(() => {});
+        }
+      });
       const requested = await store?.stopState();
       if (requested?.stopped) await controller.stop(requested.reason ?? 'operator_file_request');
     }
@@ -29,7 +36,7 @@ export class DesktopController {
         await controller.#session?.expire(); await controller.publish();
       })().catch(error => { void controller.stop(error.message).catch(() => {}); });
     }, 250); controller.#timer.unref();
-    if (!simulated && controller.#transport) controller.#heartbeat = setInterval(() => {
+    if (!simulated && typeof controller.#transport?.ping === 'function') controller.#heartbeat = setInterval(() => {
       controller.#transport.ping().catch(error => { void controller.stop(error.message).catch(() => {}); });
     }, 1000);
     await controller.publish({ event: 'controller_started' });
@@ -38,19 +45,22 @@ export class DesktopController {
   attach(label = 'local-agent') { const id = randomUUID(); this.#clients.set(id, String(label).slice(0, 100)); return id; }
   async detach(client) {
     for (const capture of this.#captures.values()) if (capture.client === client) capture.abort.abort(new Error('Agent disconnected'));
+    this.#clients.delete(client);
     if (this.#owner?.client === client) {
       const token = this.#owner.token; this.#owner = undefined;
       await this.#session.release(token).catch(() => {});
     }
-    this.#clients.delete(client); await this.publish({ event: 'agent_disconnected' });
+    // Recording finalization must never prevent neutral input on disconnect.
+    if (this.#recording?.clientId === client) await this.#stopRecording('agent_disconnected').catch(() => {});
+    await this.publish({ event: 'agent_disconnected' });
   }
   status() {
     const native = this.#transport?.status?.();
     const control = this.#session?.status() ?? { owner: null, leaseRemainingMs: 0, operatorStopped: this.#stopped.stopped, faulted: false };
-    return { version: '0.2.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
+    return { version: '0.3.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
       control: { ...control, operatorStopped: this.#stopped.stopped || (!this.#closing && control.operatorStopped), jobId: control.owner ? this.#owner?.jobId ?? null : null, clientId: control.owner ? this.#owner?.client ?? null : null },
       operatorStop: this.#stopped, clients: this.#clients.size, activeCaptures: this.#captures.size, lastAction: this.#lastAction ?? null,
-      screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
+      screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
   }
   publish(event) { return this.#store?.publish(this.status(), event) ?? Promise.resolve(); }
   async stop(reason = 'operator_request') {
@@ -61,11 +71,12 @@ export class DesktopController {
     // emergencyStop marks the session synchronously, interrupting split input.
     const release = this.#session?.emergencyStop() ?? Promise.resolve();
     this.#stopPromise = (async () => {
-      const outcomes = await Promise.allSettled([this.#store?.persistStop(this.#stopped.reason), release]);
+      const outcomes = await Promise.allSettled([this.#store?.persistStop(this.#stopped.reason), release, this.#stopRecording(this.#stopped.reason)]);
       this.#owner = undefined;
       await this.publish({ event: 'operator_stop', reason: this.#stopped.reason, released: outcomes[1].status === 'fulfilled' });
       if (outcomes[0].status === 'rejected') throw outcomes[0].reason;
       if (outcomes[1].status === 'rejected') throw outcomes[1].reason;
+      if (outcomes[2].status === 'rejected') throw outcomes[2].reason;
     })();
     return this.#stopPromise;
   }
@@ -76,6 +87,11 @@ export class DesktopController {
       const args = parseTool(name, rawArgs);
       if (name === 'hid_status') return result(this.status());
       if (name === 'hid_emergency_stop') { await this.stop(); return result({ ok: true, operatorStopped: true, persisted: Boolean(this.#store), simulated: this.#simulated }); }
+      if (name === 'screen_record_status' || name === 'screen_record_stop') {
+        if (this.#recording?.clientId !== client || this.#recording.recordingId !== args.recordingId) throw new Error('Recording belongs to another connection or is unknown');
+        if (name === 'screen_record_stop') await this.#stopRecording('requested');
+        return result(this.#recording);
+      }
       if (this.#closing || this.#stopped.stopped) throw new Error('Operator stopped this controller; explicit local operator resume required');
       signal?.throwIfAborted();
       if (name === 'hid_acquire') {
@@ -101,12 +117,31 @@ export class DesktopController {
         const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
         this.#captures.set(action.id, { client, abort });
         try {
-          const { data, ...metadata } = await this.#transport.capture({ signal: combined });
+          const { token, ...options } = args;
+          const { data, ...metadata } = await this.#transport.capture({ ...options, signal: combined });
           combined.throwIfAborted();
           await this.#session.assertLease(args.token);
-          response = { content: [{ type: 'text', text: JSON.stringify(metadata) }, { type: 'image', mimeType: 'image/png', data }] };
+          response = { content: [{ type: 'text', text: JSON.stringify(metadata) }, { type: 'image', mimeType: metadata.mimeType ?? 'image/png', data }] };
           action.frameId = metadata.frameId;
         } finally { this.#captures.delete(action.id); }
+      } else if (name === 'screen_record_start') {
+        if (this.#simulated || !this.#transport.recordingAvailable) throw new Error('Screen recording unavailable; install ScreenCapture.exe');
+        if (['starting', 'recording', 'stopping'].includes(this.#recording?.state)) throw new Error('A recording is already active');
+        const { token, ...options } = args;
+        const recordingId = randomUUID();
+        this.#recording = { recordingId, clientId: client, owner: action.owner, jobId: action.jobId, state: 'starting' };
+        try {
+          const metadata = await this.#transport.startRecording({ ...options, recordingId });
+          this.#recording = { ...this.#recording, ...metadata };
+          if (signal?.aborted || this.#stopped.stopped || this.#closing || !this.#clients.has(client)) {
+            await this.#stopRecording('start_cancelled'); throw new Error('Recording start cancelled');
+          }
+          // Input lease expiry does not shorten the separately authorized recording.
+          response = result(this.#recording);
+        } catch (error) {
+          if (this.#recording?.recordingId === recordingId && this.#recording.state === 'starting') this.#recording = { ...this.#recording, state: 'failed', error: error.message };
+          throw error;
+        }
       } else if (name === 'hid_release') {
         await this.#session.release(args.token); this.#owner = undefined;
       } else {
@@ -128,12 +163,26 @@ export class DesktopController {
       return { isError: true, content: [{ type: 'text', text: message }] };
     }
   }
+  async #stopRecording(reason) {
+    if (!['starting', 'recording', 'stopping'].includes(this.#recording?.state)) return;
+    const recordingId = this.#recording.recordingId;
+    this.#recording = { ...this.#recording, state: 'stopping', stopReason: reason };
+    try {
+      const metadata = await this.#transport?.stopRecording();
+      if (this.#recording?.recordingId === recordingId) this.#recording = { ...this.#recording, ...(metadata ?? {}), state: metadata?.state === 'recording' ? 'stopping' : metadata?.state ?? 'interrupted', stopReason: reason };
+    } catch (error) {
+      if (this.#recording?.recordingId === recordingId) this.#recording = { ...this.#recording, state: 'failed', reason: error.message, finalized: false };
+      throw error;
+    }
+  }
   async close() {
     if (this.#closing) return;
     this.#closing = true; clearInterval(this.#timer); clearInterval(this.#heartbeat);
     for (const capture of this.#captures.values()) capture.abort.abort(new Error('Controller shutting down'));
     await this.#session?.emergencyStop().catch(() => {});
+    await this.#stopRecording('controller_shutdown').catch(() => {});
     await this.#transport?.close?.().catch(() => {});
+    this.#recordingCleanup?.();
     await this.publish({ event: 'controller_stopped' }); await this.#store?.flush();
   }
 }
