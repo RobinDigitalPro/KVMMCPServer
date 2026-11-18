@@ -74,4 +74,20 @@ if (Test-Path -LiteralPath $taskBinaryManifestPath) {
 # Registration path is unchanged. Preserve any operator stop; never call resume.
 & $taskConfig.nodeExecutable (Join-Path $taskTarget 'src\manage.mjs') start --live $taskConfig.nativeExecutable --data-root $taskData
 if ($LASTEXITCODE -ne 0) { throw "Start failed; inspect logs. Backup: $taskBackup" }
+$taskActivated = Get-Content -LiteralPath $taskStatusPath -Raw | ConvertFrom-Json
+if ($taskActivated.version -ne '0.3.0') { throw 'Started controller did not report version 0.3.0; inspect logs before reconnecting' }
+if ($taskConfig.availableUpdate) {
+    $taskConfig.availableUpdate.activationPending = $false
+    $taskConfig.availableUpdate | Add-Member -NotePropertyName activatedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+    [IO.File]::WriteAllText([IO.Path]::GetFullPath($Configuration), ($taskConfig | ConvertTo-Json -Depth 12) + [Environment]::NewLine, $taskEncoding)
+}
+$taskVerificationPath = Join-Path $taskData 'status.json'
+if (Test-Path -LiteralPath $taskVerificationPath) {
+    $taskVerification = Get-Content -LiteralPath $taskVerificationPath -Raw | ConvertFrom-Json
+    $taskVerification.version = '0.3.0'; $taskVerification.updatedUtc = [DateTime]::UtcNow.ToString('o')
+    $taskVerification.sourceFileCount = $taskFiles.Count
+    $taskVerification.sourceManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $taskData 'source-manifest.json')).Hash
+    if ($taskVerification.availableUpdate) { $taskVerification.availableUpdate.activationPending = $false }
+    [IO.File]::WriteAllText($taskVerificationPath, ($taskVerification | ConvertTo-Json -Depth 16), $taskEncoding)
+}
 Write-Output "Installed 0.3.0. Reload the MCP connection for eleven tools. Backup: $taskBackup"
