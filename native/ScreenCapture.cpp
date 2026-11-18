@@ -223,7 +223,7 @@ public:
 };
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc == 4 && std::wstring(argv[1]) == L"inspect") {
+    if (argc == 4 && (std::wstring(argv[1]) == L"inspect" || std::wstring(argv[1]) == L"inspect-all")) {
         try {
             Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
             ComPtr<IMFAttributes> attributes; Check(MFCreateAttributes(&attributes, 1), "decoder attributes"); Check(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE), "decoder color conversion");
@@ -240,7 +240,16 @@ int wmain(int argc, wchar_t** argv) {
             Frame frame; frame.width = width; frame.height = height; frame.pixels.resize(static_cast<size_t>(width) * height * 4);
             if (length < frame.pixels.size()) { buffer->Unlock(); throw std::runtime_error("decoded_frame_too_small"); }
             memcpy(frame.pixels.data(), data, frame.pixels.size()); buffer->Unlock(); Capture capture; capture.Save(frame, fs::path(argv[3]), false);
-            Emit("{\"ok\":true,\"decoded\":true,\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) + ",\"durationMs\":" + std::to_string(duration.uhVal.QuadPart / 10000) + "}"); PropVariantClear(&duration); return 0;
+            unsigned long decodedFrames = 1; LONGLONG lastTimestamp = timestamp;
+            if (std::wstring(argv[1]) == L"inspect-all") {
+                for (unsigned long count = 0; count < 20000; ++count) {
+                    sample.Reset(); Check(reader->ReadSample(videoStream, 0, nullptr, &flags, &timestamp, &sample), "decode next frame");
+                    if (sample) { ++decodedFrames; lastTimestamp = timestamp; }
+                    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+                }
+                if (!(flags & MF_SOURCE_READERF_ENDOFSTREAM)) throw std::runtime_error("video_decode_frame_limit_exceeded");
+            }
+            Emit("{\"ok\":true,\"decoded\":true,\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) + ",\"durationMs\":" + std::to_string(duration.uhVal.QuadPart / 10000) + ",\"decodedFrames\":" + std::to_string(decodedFrames) + ",\"lastFrameMs\":" + std::to_string(lastTimestamp / 10000) + ",\"endOfStream\":" + ((flags & MF_SOURCE_READERF_ENDOFSTREAM) ? "true" : "false") + "}"); PropVariantClear(&duration); return 0;
         } catch (const std::exception& error) { Emit("{\"ok\":false,\"error\":" + Json(error.what()) + "}"); return 1; }
     }
     if (argc != 4 || std::wstring(argv[1]) != L"serve" || std::wstring(argv[2]) != L"--data-root") { std::cerr << "Usage: ScreenCapture.exe serve --data-root ABSOLUTE_DATA_ROOT\n"; return 2; }

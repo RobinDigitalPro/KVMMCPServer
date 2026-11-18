@@ -125,6 +125,8 @@ Explicit live tests observe the desktop but send no mouse or keyboard input:
 node scripts/Test-CaptureLive.mjs --live D:\AgentData\desktop-hid\native\ScreenCapture.exe D:\AgentData\capture-tests\smoke
 node scripts/Test-CaptureSafety.mjs --live D:\AgentData\desktop-hid\native\ScreenCapture.exe D:\AgentData\capture-tests\safety
 node scripts/Test-CaptureMcp.mjs --live D:\AgentData\desktop-hid\native\ScreenCapture.exe D:\AgentData\capture-tests\mcp
+# Optional longer run (seconds, up to 600):
+node scripts/Test-CaptureMcp.mjs --live D:\AgentData\desktop-hid\native\ScreenCapture.exe D:\AgentData\capture-tests\minute 60
 ```
 
 The first checks three snapshots, a two-second automatic stop, first-frame MP4
@@ -133,5 +135,7 @@ the native pipe to verify rejection of 601 seconds, parent EOF and heartbeat
 loss. A full ten-minute endurance run is separate from these quick checks.
 The third uses two real official SDK clients over stdio, an isolated authenticated
 broker and the actual capture worker; HID writes are suppressed in that harness.
+An optional duration argument selects 1..600 seconds (default 2). A full
+one-minute MCP recording was also decoded to end-of-stream with 900 frames.
 Rotated/multiple monitors, other DPI/HDR layouts, protected content and
 exclusive fullscreen remain unvalidated. A locked desktop is refused.

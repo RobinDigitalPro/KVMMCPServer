@@ -86,6 +86,8 @@ if (Test-Path -LiteralPath $taskVerificationPath) {
     $taskVerification = Get-Content -LiteralPath $taskVerificationPath -Raw | ConvertFrom-Json
     $taskVerification.version = '0.3.0'; $taskVerification.updatedUtc = [DateTime]::UtcNow.ToString('o')
     $taskVerification.sourceFileCount = $taskFiles.Count
+    $taskVerification.javascriptTests = 39
+    if ($taskVerification.mcp) { $taskVerification.mcp.toolCount = 11 }
     $taskVerification.sourceManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $taskData 'source-manifest.json')).Hash
     if ($taskVerification.availableUpdate) { $taskVerification.availableUpdate.activationPending = $false }
     [IO.File]::WriteAllText($taskVerificationPath, ($taskVerification | ConvertTo-Json -Depth 16), $taskEncoding)

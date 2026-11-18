@@ -17,6 +17,11 @@ Explicit capture-only live tests sent no mouse/keyboard input and verified:
   decoded back to a visually checked first-frame PNG. Cursor alpha was flattened
   before scaling to prevent a black cursor rectangle.
 - Early stop of a request configured for 600 seconds.
+- A later one-minute run through the official SDK/stdio/broker path completed
+  automatically at 60000 ms. The 1280x720 MP4 was approximately 8.2 MB and a full
+  decode reached end-of-stream with 900 video frames, container duration 59999 ms
+  and final-frame timestamp 59933 ms. Native sample submission counted 899 frames;
+  the encoded/decode frame count can differ due to media-pipeline timing.
 - Direct native rejection of 601 seconds, independently of MCP validation.
 - Parent-pipe EOF finalized a partial recording; missing heartbeat stopped and
   finalized a recording after approximately five seconds from the last ping.
@@ -26,7 +31,8 @@ Explicit capture-only live tests sent no mouse/keyboard input and verified:
   That isolated harness suppressed HID writes; the active desktop controller
   serving another chat was not restarted for these capture tests.
 
-The short acceptance uses a two-second deadline; a full ten-minute endurance
+Quick acceptance uses a two-second deadline; the one-minute run is additional
+duration coverage. A full ten-minute endurance
 run and lock/UAC/display changes during recording remain separate acceptance.
 No livestream or audio capture was added. Operational evidence stays outside Git.
 

@@ -12,6 +12,8 @@ import { externalRoot } from '../src/state.mjs';
 const text = value => JSON.parse(value.content[0].text);
 if (process.argv[2] !== '--live' || !path.isAbsolute(process.argv[3] ?? '')) throw new Error('Usage: --live ABSOLUTE_CAPTURE_EXE ABSOLUTE_TEST_ROOT');
 const root = externalRoot(process.argv[4]); await fs.mkdir(root, { recursive: true });
+const seconds = Number(process.argv[5] ?? 2);
+if (!Number.isInteger(seconds) || seconds < 1 || seconds > 600) throw new Error('Optional duration must be 1..600 seconds');
 const capture = new CaptureWorker(process.argv[3], root);
 const transport = { send: async () => {}, captureAvailable: true, recordingAvailable: true,
   capture: options => capture.snapshot(options), startRecording: options => capture.startRecording(options), stopRecording: () => capture.stopRecording(),
@@ -22,18 +24,18 @@ async function connect(name) {
   const client = new Client({ name, version: '0.3.0' }); clients.push(client);
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../src/mcp.mjs', import.meta.url)), '--connect', '--data-root', root, '--agent', name], stderr: 'pipe' })); return client;
 }
-const receipt = { startedUtc: new Date().toISOString(), captureOnlyHarness: true, hidWritesSuppressed: true, inputSent: false };
+const receipt = { startedUtc: new Date().toISOString(), requestedSeconds: seconds, captureOnlyHarness: true, hidWritesSuppressed: true, inputSent: false };
 try {
   const a = await connect('capture-owner'), b = await connect('capture-other');
   receipt.toolCount = (await a.listTools()).tools.length; assert.equal(receipt.toolCount, 11);
   const lease = text(await a.callTool({ name: 'hid_acquire', arguments: { owner: 'capture-acceptance', ttlMs: 10000 } }));
   const image = await a.callTool({ name: 'hid_capture', arguments: { token: lease.token, format: 'jpeg', maxWidth: 1280 } });
   assert.equal(image.isError, undefined); assert.equal(image.content[1].mimeType, 'image/jpeg'); receipt.snapshot = text(image);
-  receipt.started = text(await a.callTool({ name: 'screen_record_start', arguments: { token: lease.token, maxSeconds: 2, maxWidth: 1280 } }));
+  receipt.started = text(await a.callTool({ name: 'screen_record_start', arguments: { token: lease.token, maxSeconds: seconds, maxWidth: 1280 } }));
   assert.equal(receipt.started.state, 'recording');
   await a.callTool({ name: 'hid_release', arguments: { token: lease.token } });
   assert.equal((await b.callTool({ name: 'screen_record_stop', arguments: { recordingId: receipt.started.recordingId } })).isError, true);
-  for (let n = 0; n < 40; n++) {
+  for (let n = 0; n < seconds * 10 + 100; n++) {
     const status = text(await a.callTool({ name: 'screen_record_status', arguments: { recordingId: receipt.started.recordingId } }));
     if (status.state !== 'recording') { receipt.completed = status; break; }
     await new Promise(resolve => setTimeout(resolve, 100));
