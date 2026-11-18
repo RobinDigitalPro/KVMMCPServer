@@ -26,6 +26,22 @@ the MCP connection so its catalog contains eleven tools. A running 0.2.0 adapter
 or controller keeps its old code until restarted. Never clear an operator stop
 as part of an upgrade. See `hid_status.screenRecording` for availability.
 
+The supplied updater refuses to act while any MCP clients are connected, input
+is leased, capture is pending, recording is active or controller status is stale.
+Finish work and close the MCP connection before running it from the reviewed
+Git checkout. It backs up installed source/configuration to the operational
+data root, copies only tracked source plus the reviewed capture executable,
+verifies hashes, preserves operator stop and starts the new controller:
+
+```powershell
+.\scripts\Update-Local.ps1 -Configuration D:\InstalledSource\deployment.local.json -CaptureExecutable D:\AgentData\capture-build\ScreenCapture.exe -ConfirmIdle
+```
+
+Then reload the MCP connection. The updater does not change the registered
+source path, driver, account rights or Windows security settings. If a copy or
+startup fails, inspect the backup/logs before resuming; it does not clear faults
+or automatically roll back the installation.
+
 ## Screenshot
 
 Acquire a short input lease, then call the existing tool:
