@@ -1,5 +1,5 @@
 // MIT. Windows desktop duplication, WIC stills and Media Foundation MP4.
-// User-mode only: no driver, injection, remote endpoint or audio capture.
+// User-mode only: no driver, injection, remote endpoint or microphone capture.
 #define NOMINMAX
 #include <windows.h>
 #include <wtsapi32.h>
@@ -19,6 +19,10 @@
 #include <string>
 #include <vector>
 #include <iomanip>
+#include <cmath>
+#include <mferror.h>
+#include <mmsystem.h>
+#include <memory>
 
 using Microsoft::WRL::ComPtr;
 using Clock = std::chrono::steady_clock;
@@ -64,6 +68,8 @@ static void Identifier(const std::string& value) {
     if (value.size() != 36 || value.find_first_not_of("0123456789abcdef-") != std::string::npos) throw std::runtime_error("invalid_identifier");
 }
 struct Frame { UINT width = 0, height = 0; std::vector<BYTE> pixels; POINT cursor = {}; bool cursorIncluded = false; };
+#include "SystemAudio.h"
+#include "../test/SyntheticSystemAudio.h"
 
 class Capture {
     ComPtr<ID3D11Device> device;
@@ -172,24 +178,67 @@ public:
 };
 
 class Recording {
+    std::unique_ptr<SystemAudio> systemAudio;
+    DWORD audioStream = 0;
+    bool audioEnabled = false, audioRequested = true;
+    std::string audioState, audioReason;
+    UINT64 audioFrames = 0, audioCapturedFrames = 0;
+    int audioPeak = 0;
+    LONGLONG startQpc = 0;
+    void AudioSample(const BYTE* data, UINT count) {
+        if (!count) return;
+        ComPtr<IMFMediaBuffer> buffer; Check(MFCreateMemoryBuffer(count * SystemAudio::Block, &buffer), "audio buffer");
+        BYTE* output = nullptr; Check(buffer->Lock(&output, nullptr, nullptr), "lock audio buffer");
+        if (data) memcpy(output, data, count * SystemAudio::Block); else memset(output, 0, count * SystemAudio::Block);
+        Check(buffer->Unlock(), "unlock audio buffer"); Check(buffer->SetCurrentLength(count * SystemAudio::Block), "audio buffer length");
+        ComPtr<IMFSample> sample; Check(MFCreateSample(&sample), "audio sample"); Check(sample->AddBuffer(buffer.Get()), "audio sample buffer");
+        const LONGLONG begin = static_cast<LONGLONG>(audioFrames * 10000000 / SystemAudio::Rate), end = static_cast<LONGLONG>((audioFrames + count) * 10000000 / SystemAudio::Rate);
+        Check(sample->SetSampleTime(begin), "audio timestamp"); Check(sample->SetSampleDuration(end - begin), "audio duration"); Check(writer->WriteSample(audioStream, sample.Get()), "encode system audio");
+        audioFrames += count;
+        if (data) {
+            audioCapturedFrames += count;
+            const SHORT* samples = reinterpret_cast<const SHORT*>(data);
+            for (size_t i = 0; i < static_cast<size_t>(count) * SystemAudio::Channels; ++i) audioPeak = std::max(audioPeak, std::abs(static_cast<int>(samples[i])));
+        }
+    }
+    void SilenceUntil(UINT64 target) {
+        target = std::min<UINT64>(target, static_cast<UINT64>(seconds) * SystemAudio::Rate);
+        while (audioFrames < target) AudioSample(nullptr, static_cast<UINT>(std::min<UINT64>(target - audioFrames, 4800)));
+    }
+    void ConfigureAudio() {
+        ComPtr<IMFMediaType> output; Check(MFCreateMediaType(&output), "AAC output type");
+        Check(output->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "audio output"); Check(output->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC), "AAC codec");
+        Check(output->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, SystemAudio::Channels), "AAC channels"); Check(output->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, SystemAudio::Rate), "AAC rate");
+        Check(output->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16), "AAC bits"); Check(output->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 20000), "AAC bitrate"); Check(output->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0), "AAC payload");
+        Check(writer->AddStream(output.Get(), &audioStream), "add AAC stream");
+        ComPtr<IMFMediaType> input; Check(MFCreateMediaType(&input), "PCM input type");
+        Check(input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "audio input"); Check(input->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM), "PCM codec");
+        Check(input->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, SystemAudio::Channels), "PCM channels"); Check(input->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, SystemAudio::Rate), "PCM rate");
+        Check(input->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16), "PCM bits"); Check(input->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, SystemAudio::Block), "PCM alignment"); Check(input->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, SystemAudio::Rate * SystemAudio::Block), "PCM byte rate");
+        Check(writer->SetInputMediaType(audioStream, input.Get(), nullptr), "AAC input");
+    }
 public:
+    explicit Recording(std::unique_ptr<SystemAudio> source = std::make_unique<SystemAudio>()) : systemAudio(std::move(source)) {}
     ComPtr<IMFSinkWriter> writer; DWORD stream = 0;
     std::string id, startedUtc; fs::path partial, final;
     Clock::time_point start, next; int seconds = 0, fps = 0, maxWidth = 0, bitrate = 0;
     UINT width = 0, height = 0, sourceWidth = 0, sourceHeight = 0; unsigned long frames = 0; LONGLONG mediaEnd = 0;
     bool active() const { return writer != nullptr; }
-    void Begin(Capture& capture, const fs::path& root, const std::string& identity, int duration, int rate, int size, int bits) {
+    void Begin(Capture& capture, const fs::path& root, const std::string& identity, int duration, int rate, int size, int bits, bool includeAudio = true) {
         if (active()) throw std::runtime_error("recording_already_active");
         Identifier(identity); if (duration < 1 || duration > MaximumSeconds) throw std::runtime_error("recording_limit_600_seconds");
         Frame source = capture.Grab(true), first = capture.Scale(source, size, true);
         id = identity; seconds = duration; fps = rate; maxWidth = size; bitrate = bits; width = first.width; height = first.height; sourceWidth = source.width; sourceHeight = source.height;
-        frames = 0; mediaEnd = 0; partial = root / L"recordings" / fs::u8path(id + ".partial.mp4"); final = root / L"recordings" / fs::u8path(id + ".mp4");
+        frames = 0; mediaEnd = 0; audioFrames = 0; audioCapturedFrames = 0; audioPeak = 0; audioRequested = includeAudio;
+        audioEnabled = includeAudio && systemAudio->Initialize(); audioState = !includeAudio ? "disabled" : audioEnabled ? "capturing" : "unavailable"; audioReason = includeAudio ? systemAudio->error : "explicitly_disabled";
+        partial = root / L"recordings" / fs::u8path(id + ".partial.mp4"); final = root / L"recordings" / fs::u8path(id + ".mp4");
         fs::create_directories(partial.parent_path()); if (fs::exists(partial) || fs::exists(final)) throw std::runtime_error("output_already_exists");
         ComPtr<IMFAttributes> attributes; Check(MFCreateAttributes(&attributes, 3), "encoder attributes");
         Check(attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE), "hardware transforms");
         Check(attributes->SetUINT32(MF_SINK_WRITER_DISABLE_THROTTLING, TRUE), "encoder throttling");
-        Check(MFCreateSinkWriterFromURL(partial.c_str(), nullptr, attributes.Get(), &writer), "MP4 sink writer");
-        try {
+        for (;;) {
+          Check(MFCreateSinkWriterFromURL(partial.c_str(), nullptr, attributes.Get(), &writer), "MP4 sink writer");
+          try {
             ComPtr<IMFMediaType> output; Check(MFCreateMediaType(&output), "output type");
             Check(output->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video), "output video"); Check(output->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264), "H264");
             Check(output->SetUINT32(MF_MT_AVG_BITRATE, bitrate), "bitrate"); Check(output->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive), "interlace");
@@ -197,10 +246,43 @@ public:
             Check(writer->AddStream(output.Get(), &stream), "add video stream");
             ComPtr<IMFMediaType> input; Check(MFCreateMediaType(&input), "input type"); Check(input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video), "input video"); Check(input->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32), "RGB32");
             Check(input->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive), "input interlace"); Check(MFSetAttributeSize(input.Get(), MF_MT_FRAME_SIZE, width, height), "input size"); Check(MFSetAttributeRatio(input.Get(), MF_MT_FRAME_RATE, fps, 1), "input rate"); Check(MFSetAttributeRatio(input.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1), "input aspect");
-            Check(input->SetUINT32(MF_MT_DEFAULT_STRIDE, width * 4), "input stride"); Check(writer->SetInputMediaType(stream, input.Get(), nullptr), "encoder input"); Check(writer->BeginWriting(), "begin recording");
+            Check(input->SetUINT32(MF_MT_DEFAULT_STRIDE, width * 4), "input stride"); Check(writer->SetInputMediaType(stream, input.Get(), nullptr), "encoder input");
+            if (audioEnabled) ConfigureAudio();
+            Check(writer->BeginWriting(), "begin recording");
             first = capture.Scale(capture.Grab(true), maxWidth, true);
-            start = Clock::now(); next = start; startedUtc = Utc(); Write(first, 0); next += std::chrono::microseconds(1000000 / fps);
-        } catch (...) { writer.Reset(); throw; }
+            start = Clock::now(); startQpc = Qpc100ns(); next = start; startedUtc = Utc();
+            if (audioEnabled) { try { systemAudio->Start(); } catch (const std::exception& error) { audioState = "interrupted"; audioReason = error.what(); systemAudio->Close(); } }
+            Write(first, 0); next += std::chrono::microseconds(1000000 / fps); break;
+          } catch (const std::exception& error) {
+            writer.Reset(); systemAudio->Close();
+            if (!audioEnabled) throw;
+            // Only our fresh UUID output can exist here. Retry video-only if
+            // an endpoint/codec cannot be initialized; preserve an explicit reason.
+            audioEnabled = false; audioState = "unavailable"; audioReason = error.what(); fs::remove(partial);
+          }
+        }
+    }
+    void PumpAudio(bool finalDrain = false) {
+        if (!audioEnabled || !active()) return;
+        const LONGLONG elapsed = std::clamp<LONGLONG>(Qpc100ns() - startQpc, 0, static_cast<LONGLONG>(seconds) * 10000000);
+        const UINT64 limit = static_cast<UINT64>((finalDrain ? std::max(elapsed, mediaEnd) : elapsed) * SystemAudio::Rate / 10000000);
+        try {
+            systemAudio->Drain([&](const BYTE* data, UINT count, DWORD flags, UINT64 qpc) {
+                const LONGLONG time = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) ? Qpc100ns() - startQpc - static_cast<LONGLONG>(count) * 10000000 / SystemAudio::Rate : static_cast<LONGLONG>(qpc) - startQpc;
+                LONGLONG at = time * SystemAudio::Rate / 10000000;
+                UINT skip = at < 0 ? static_cast<UINT>(std::min<LONGLONG>(-at, count)) : 0;
+                at += skip;
+                if (at < static_cast<LONGLONG>(audioFrames)) skip += static_cast<UINT>(std::min<UINT64>(audioFrames - std::max<LONGLONG>(at, 0), count - skip));
+                const UINT64 position = static_cast<UINT64>(std::max<LONGLONG>(time * SystemAudio::Rate / 10000000 + skip, 0));
+                if (skip >= count || position >= limit) return;
+                SilenceUntil(position);
+                const UINT take = static_cast<UINT>(std::min<UINT64>(count - skip, limit - audioFrames));
+                AudioSample((flags & AUDCLNT_BUFFERFLAGS_SILENT) || !data ? nullptr : data + static_cast<size_t>(skip) * SystemAudio::Block, take);
+            });
+        } catch (const std::exception& error) { audioState = "interrupted"; audioReason = error.what(); systemAudio->Close(); }
+        // WASAPI may produce no packets during silence. Keep the AAC timeline
+        // aligned, leaving 100 ms for delayed packets until the final drain.
+        SilenceUntil(finalDrain ? limit : limit > 4800 ? limit - 4800 : 0);
     }
     void Write(const Frame& frame, LONGLONG timestamp) {
         if (frame.width != width || frame.height != height) throw std::runtime_error("display_dimensions_changed");
@@ -212,17 +294,79 @@ public:
         Check(sample->SetSampleDuration(duration), "sample duration"); Check(writer->WriteSample(stream, sample.Get()), "encode video sample"); mediaEnd = timestamp + duration; ++frames;
     }
     std::string Status(const char* state, const std::string& reason = "") const {
-        std::ostringstream out; out << "\"recordingId\":" << Json(id) << ",\"state\":" << Json(state) << ",\"reason\":" << Json(reason) << ",\"startedUtc\":" << Json(startedUtc) << ",\"maxSeconds\":" << seconds << ",\"fps\":" << fps << ",\"width\":" << width << ",\"height\":" << height << ",\"frames\":" << frames << ",\"durationMs\":" << mediaEnd / 10000 << ",\"path\":" << Json(Utf8(final.wstring())) << ",\"partialPath\":" << Json(Utf8(partial.wstring())) << ",\"audio\":false,\"cursorIncludedInImage\":true"; return out.str();
+        std::ostringstream out; out << "\"recordingId\":" << Json(id) << ",\"state\":" << Json(state) << ",\"reason\":" << Json(reason) << ",\"startedUtc\":" << Json(startedUtc) << ",\"maxSeconds\":" << seconds << ",\"fps\":" << fps << ",\"width\":" << width << ",\"height\":" << height << ",\"frames\":" << frames << ",\"durationMs\":" << mediaEnd / 10000 << ",\"path\":" << Json(Utf8(final.wstring())) << ",\"partialPath\":" << Json(Utf8(partial.wstring())) << ",\"audio\":" << (audioEnabled ? "true" : "false") << ",\"systemAudioRequested\":" << (audioRequested ? "true" : "false") << ",\"audioSource\":" << Json(systemAudio->Source()) << ",\"audioStatus\":" << Json(audioState) << ",\"audioReason\":" << Json(audioReason) << ",\"audioSampleRate\":" << (audioEnabled ? SystemAudio::Rate : 0) << ",\"audioChannels\":" << (audioEnabled ? SystemAudio::Channels : 0) << ",\"audioFrames\":" << audioFrames << ",\"audioCapturedFrames\":" << audioCapturedFrames << ",\"audioPeak\":" << audioPeak << ",\"microphone\":false,\"cursorIncludedInImage\":true"; return out.str();
     }
     void Finish(const char* state, const std::string& reason) {
         if (!active()) return;
+        try { PumpAudio(true); } catch (const std::exception& error) { audioState = "interrupted"; audioReason = error.what(); }
+        systemAudio->Close();
+        if (audioEnabled && audioState == "capturing") audioState = "captured";
         HRESULT hr = writer->Finalize(); writer.Reset();
         try { Check(hr, "finalize MP4"); fs::rename(partial, final); Emit("{\"type\":\"recording_finished\"," + Status(state, reason) + ",\"finishedUtc\":" + Json(Utc()) + ",\"finalized\":true}"); }
         catch (const std::exception& error) { Emit("{\"type\":\"recording_finished\"," + Status("failed", error.what()) + ",\"finishedUtc\":" + Json(Utc()) + ",\"finalized\":false}"); }
     }
+    void Tick(Capture& capture) {
+        RequireConsole();
+        if (Clock::now() - start >= std::chrono::seconds(seconds)) { Finish("completed", "duration_limit"); return; }
+        PumpAudio();
+        if (Clock::now() >= next) {
+            Frame source = capture.Grab(true); if (source.width != sourceWidth || source.height != sourceHeight) throw std::runtime_error("display_dimensions_changed");
+            const LONGLONG time = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count() * 10;
+            if (time < static_cast<LONGLONG>(seconds) * 10000000) Write(capture.Scale(source, maxWidth, true), time);
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count(); const auto interval = 1000000 / fps;
+            next = start + std::chrono::microseconds((elapsed / interval + 1) * interval);
+        }
+    }
 };
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 4 && std::wstring(argv[1]) == L"self-test-av") {
+        try {
+            if (!fs::path(argv[2]).is_absolute()) throw std::runtime_error("absolute_test_root_required");
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
+            Capture capture; Recording recording(std::make_unique<SyntheticSystemAudio>());
+            recording.Begin(capture, fs::path(argv[2]), Utf8(argv[3]), 3, 15, 1280, 6000000);
+            while (recording.active()) { recording.Tick(capture); Sleep(5); }
+            return 0;
+        } catch (const std::exception& error) { Emit("{\"ok\":false,\"error\":" + Json(error.what()) + "}"); return 1; }
+    }
+    if (argc == 3 && std::wstring(argv[1]) == L"test-tone") {
+        if (!fs::path(argv[2]).is_absolute()) return 2;
+        if (!PlaySoundW(argv[2], nullptr, SND_FILENAME | SND_SYNC | SND_NODEFAULT)) return 1;
+        Emit("{\"played\":true}"); return 0;
+    }
+    if (argc == 3 && std::wstring(argv[1]) == L"inspect-audio") {
+        try {
+            Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
+            ComPtr<IMFSourceReader> reader; Check(MFCreateSourceReaderFromURL(argv[2], nullptr, &reader), "open recording audio");
+            const DWORD audioStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
+            ComPtr<IMFMediaType> native; const HRESULT available = reader->GetNativeMediaType(audioStream, 0, &native);
+            if (available == MF_E_INVALIDSTREAMNUMBER || available == MF_E_NO_MORE_TYPES) { Emit("{\"ok\":true,\"audio\":false}"); return 0; }
+            Check(available, "read audio type");
+            Check(reader->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE), "deselect streams"); Check(reader->SetStreamSelection(audioStream, TRUE), "select audio");
+            ComPtr<IMFMediaType> pcm; Check(MFCreateMediaType(&pcm), "decoded audio type"); Check(pcm->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "decoded audio"); Check(pcm->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM), "decoded PCM"); Check(pcm->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16), "decoded bits");
+            Check(reader->SetCurrentMediaType(audioStream, nullptr, pcm.Get()), "decode AAC to PCM"); Check(reader->GetCurrentMediaType(audioStream, &pcm), "decoded audio type");
+            UINT32 rate = 0, channels = 0; Check(pcm->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate), "decoded audio rate"); Check(pcm->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &channels), "decoded audio channels");
+            if (!rate || !channels || channels > 8) throw std::runtime_error("invalid_decoded_audio_format");
+            UINT64 frames = 0, samples = 0; int peak = 0; double energy = 0; LONGLONG lastEnd = 0, firstSignal = -1, lastSignal = -1; DWORD flags = 0;
+            for (unsigned int packet = 0; packet < 40000; ++packet) {
+                ComPtr<IMFSample> sample; LONGLONG timestamp = 0; Check(reader->ReadSample(audioStream, 0, nullptr, &flags, &timestamp, &sample), "decode audio sample");
+                if (sample) {
+                    ComPtr<IMFMediaBuffer> buffer; Check(sample->ConvertToContiguousBuffer(&buffer), "decoded audio buffer"); BYTE* data = nullptr; DWORD bytes = 0; Check(buffer->Lock(&data, nullptr, &bytes), "decoded audio samples");
+                    const SHORT* values = reinterpret_cast<const SHORT*>(data); const DWORD count = bytes / sizeof(SHORT);
+                    for (DWORD n = 0; n < count; ++n) { const int level = std::abs(static_cast<int>(values[n])); peak = std::max(peak, level); energy += static_cast<double>(values[n]) * values[n]; if (level > 100) { const LONGLONG at = timestamp / 10000 + static_cast<LONGLONG>(n / channels) * 1000 / rate; if (firstSignal < 0) firstSignal = at; lastSignal = at; } }
+                    buffer->Unlock(); samples += count; frames += count / channels; LONGLONG duration = 0; if (FAILED(sample->GetSampleDuration(&duration))) duration = static_cast<LONGLONG>(count / channels) * 10000000 / rate; lastEnd = std::max(lastEnd, timestamp + duration);
+                }
+                if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+            }
+            if (!(flags & MF_SOURCE_READERF_ENDOFSTREAM)) throw std::runtime_error("audio_decode_limit_exceeded");
+            std::ostringstream out; out << "{\"ok\":true,\"audio\":true,\"endOfStream\":true,\"sampleRate\":" << rate << ",\"channels\":" << channels << ",\"frames\":" << frames << ",\"durationMs\":" << lastEnd / 10000 << ",\"peak\":" << peak << ",\"rms\":" << (samples ? std::sqrt(energy / static_cast<double>(samples)) / 32768.0 : 0) << ",\"firstSignalMs\":" << firstSignal << ",\"lastSignalMs\":" << lastSignal << "}"; Emit(out.str()); return 0;
+        } catch (const std::exception& error) { Emit("{\"ok\":false,\"error\":" + Json(error.what()) + "}"); return 1; }
+    }
+    if (argc == 2 && std::wstring(argv[1]) == L"audio-probe") {
+        try { Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); SystemAudio audio; const bool available = audio.Initialize(); Emit("{\"available\":" + std::string(available ? "true" : "false") + ",\"source\":\"default_render_loopback\",\"microphone\":false,\"reason\":" + Json(audio.error) + "}"); return 0; }
+        catch (const std::exception& error) { Emit("{\"available\":false,\"reason\":" + Json(error.what()) + "}"); return 1; }
+    }
     if (argc == 4 && (std::wstring(argv[1]) == L"inspect" || std::wstring(argv[1]) == L"inspect-all")) {
         try {
             Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
@@ -258,7 +402,7 @@ int wmain(int argc, wchar_t** argv) {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
         Capture capture; Recording recording;
-        Emit("{\"type\":\"ready\",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600}");
+        Emit("{\"type\":\"ready\",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600,\"systemAudioSupported\":true,\"protocolVersion\":2}");
         HANDLE input = GetStdHandle(STD_INPUT_HANDLE); std::string pending; bool quitting = false; auto lastPing = Clock::now(), progress = lastPing;
         while (!quitting) {
             DWORD available = 0;
@@ -278,8 +422,8 @@ int wmain(int argc, wchar_t** argv) {
                     if (op == "ping" && args.size() == 2) { lastPing = Clock::now(); Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}"); continue; }
                     if (op == "quit" && args.size() == 2) { recording.Finish("interrupted", "controller_shutdown"); quitting = true; }
                     else if (op == "stop" && args.size() == 2) recording.Finish("stopped", "requested");
-                    else if (op == "record" && args.size() == 7) {
-                        RequireConsole(); recording.Begin(capture, root, args[2], Number(args[3], 1, MaximumSeconds), Number(args[4], 1, 30), Number(args[5], 0, 3840), Number(args[6], 1000000, 20000000));
+                    else if (op == "record" && (args.size() == 7 || args.size() == 8)) {
+                        RequireConsole(); recording.Begin(capture, root, args[2], Number(args[3], 1, MaximumSeconds), Number(args[4], 1, 30), Number(args[5], 0, 3840), Number(args[6], 1000000, 20000000), args.size() == 7 || Number(args[7], 0, 1) != 0);
                         Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true," + recording.Status("recording") + "}"); continue;
                     } else if (op == "snapshot" && args.size() == 6) {
                         Identifier(args[2]); const bool jpeg = args[3] == "jpeg"; if (!jpeg && args[3] != "png") throw std::runtime_error("invalid_image_format");
@@ -295,15 +439,7 @@ int wmain(int argc, wchar_t** argv) {
                 try {
                     RequireConsole(); const auto now = Clock::now();
                     if (now - lastPing > std::chrono::seconds(5)) recording.Finish("interrupted", "controller_heartbeat_lost");
-                    else if (now - recording.start >= std::chrono::seconds(recording.seconds)) recording.Finish("completed", "duration_limit");
-                    else if (now >= recording.next) {
-                        Frame source = capture.Grab(true); if (source.width != recording.sourceWidth || source.height != recording.sourceHeight) throw std::runtime_error("display_dimensions_changed");
-                        const LONGLONG time = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - recording.start).count() * 10;
-                        if (time < static_cast<LONGLONG>(recording.seconds) * 10000000) recording.Write(capture.Scale(source, recording.maxWidth, true), time);
-                        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - recording.start).count();
-                        const auto interval = 1000000 / recording.fps;
-                        recording.next = recording.start + std::chrono::microseconds((elapsed / interval + 1) * interval);
-                    }
+                    else recording.Tick(capture);
                     if (recording.active() && now - progress >= std::chrono::seconds(1)) { Emit("{\"type\":\"recording_progress\"," + recording.Status("recording") + "}"); progress = now; }
                 } catch (const std::exception& error) { recording.Finish("interrupted", error.what()); capture.Reset(); }
             }

@@ -82,3 +82,12 @@ The native worker rejects durations above 600 seconds and uses a monotonic
 deadline, session/default-desktop guards, parent EOF detection and a five-second
 heartbeat watchdog. Encoder errors leave explicit finalization state. MP4s and
 JSON receipts are external artifacts; frame data is never put in the event log.
+
+Version 0.4.0 adds WASAPI shared-mode loopback from the default render endpoint
+and AAC muxing. The controller defaults systemAudio=true; native seven-field
+record requests from older clients also default to enabled audio. An eighth
+private-protocol boolean allows explicit opt-out. No capture/microphone endpoint
+is opened. The source and QPC timestamps feed the same bounded recording clock;
+missing audio falls back explicitly. See SCREEN_CAPTURE.md. The native synthetic
+diagnostic source is selectable only by its standalone self-test CLI, never by
+the MCP record command.

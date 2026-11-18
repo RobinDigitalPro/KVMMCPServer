@@ -4,11 +4,11 @@ import { DesktopController } from '../src/controller.mjs';
 import { parseTool } from '../src/tools.mjs';
 
 const text = value => JSON.parse(value.content[0].text);
-async function setup({ start } = {}) {
+async function setup({ start, audioMetadata = {} } = {}) {
   let current, listener, stopCount = 0;
   const transport = { send: async () => {}, recordingAvailable: true, captureAvailable: true,
     onRecording: value => { listener = value; },
-    startRecording: async options => { await start?.(); current = { ...options, state: 'recording', finalized: false }; return current; },
+    startRecording: async options => { await start?.(); current = { ...options, state: 'recording', finalized: false, ...audioMetadata }; return current; },
     stopRecording: async () => { stopCount++; if (!current) return null; current = { ...current, state: 'stopped', finalized: true }; listener?.(current); return current; },
     capture: async options => ({ data: 'AA==', width: 640, height: 360, sourceWidth: 1920, sourceHeight: 1080, mimeType: options.format === 'jpeg' ? 'image/jpeg' : 'image/png' }),
   };
@@ -96,4 +96,22 @@ test('failed MP4 finalization cannot prevent input release on disconnect', async
     await controller.detach(client);
     assert.equal(controller.status().control.owner, null); assert.equal(controller.status().recording.state, 'failed');
   } finally { await controller.close(); }
+});
+test('recording requests system audio by default and permits an explicit opt-out', async () => {
+  for (const systemAudio of [undefined, false]) {
+    const s = await setup();
+    try {
+      const args = { token: s.lease.token }; if (systemAudio !== undefined) args.systemAudio = systemAudio;
+      const recording = text(await s.controller.call(s.client, 'screen_record_start', args));
+      assert.equal(recording.systemAudio, systemAudio ?? true);
+    } finally { await s.controller.close(); }
+  }
+  assert.throws(() => parseTool('screen_record_start', { token: 't', systemAudio: 'auto' }));
+});
+test('unavailable audio returns an explicit video-only status without failing recording', async () => {
+  const s = await setup({ audioMetadata: { audio: false, audioStatus: 'unavailable', audioReason: 'no_output_endpoint', microphone: false } });
+  try {
+    const recording = text(await s.controller.call(s.client, 'screen_record_start', { token: s.lease.token }));
+    assert.equal(recording.state, 'recording'); assert.equal(recording.audio, false); assert.equal(recording.audioStatus, 'unavailable'); assert.equal(recording.microphone, false);
+  } finally { await s.controller.close(); }
 });

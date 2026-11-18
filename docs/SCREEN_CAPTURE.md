@@ -1,9 +1,12 @@
 # Screenshots and bounded screen recording
 
-Version 0.3.0 adds a persistent, user-mode `ScreenCapture.exe` beside
-`HidTransport.exe`. Screenshots and silent H.264/MP4 recordings use the primary
-physical display. No livestream, audio device, network listener, driver change,
-administrator grant or new boot-security setting is required.
+Version 0.4.0 uses a persistent, user-mode `ScreenCapture.exe` beside
+`HidTransport.exe`. Screenshots and H.264/MP4 recordings use the primary physical
+display. System playback audio is included by default when an active default
+audio output and AAC encoder are available. No microphone, livestream or network
+listener is opened. The capture code requires no HID-driver change, administrator
+grant or new boot-security setting. Installing an optional audio device is a
+separate administrator action.
 
 ## Build and enable
 
@@ -107,8 +110,8 @@ stops it after five seconds without a ping. These are separate from the HID
 watchdogs. No automatic resume, unlock, session transfer or input replay occurs.
 
 Keep output on the external operational disk/share. Files are not uploaded to
-GitHub. Product demos currently have cursor video but no microphone or system
-audio. An MP4 resource path does not guarantee that an AI client can decode
+GitHub. Product demos have cursor video and system audio when available, never
+microphone audio. An MP4 resource path does not guarantee that an AI client can decode
 video; inline screenshots remain the universally supported observation route.
 
 ## Small acceptance checks
@@ -139,3 +142,53 @@ An optional duration argument selects 1..600 seconds (default 2). A full
 one-minute MCP recording was also decoded to end-of-stream with 900 frames.
 Rotated/multiple monitors, other DPI/HDR layouts, protected content and
 exclusive fullscreen remain unvalidated. A locked desktop is refused.
+
+## System playback audio (0.4.0)
+
+`screen_record_start` defaults `systemAudio` to true. WASAPI shared-mode loopback
+opens only the default **render** endpoint (console role). Windows converts its
+mix to 48-kHz, 16-bit stereo PCM and Media Foundation writes a 160-kbit/s AAC
+track into the same MP4. No microphone endpoint is requested. Set
+`systemAudio=false` to explicitly request video only; no extra permission is
+needed for ordinary loopback capture.
+
+The recording response/receipt includes `systemAudioRequested`, `audio` (track
+present), `audioSource`, `audioStatus`, `audioReason`, `audioSampleRate`,
+`audioChannels`, `audioFrames`, `audioCapturedFrames`, `audioPeak` and
+`microphone=false`. `audioStatus` starts as capturing and ends as captured;
+unavailable/disabled/interrupted explain missing, opted-out or disrupted audio.
+An audio track can correctly contain silence; track presence does not prove
+audible application sound. An unavailable endpoint or encoder does not prevent
+video recording. If an active endpoint fails mid-recording, the AAC track is
+retained with silence and an interrupted status/reason. Changing the default
+playback device is not automatically followed; start a new recording afterward.
+
+Audio packets use WASAPI/QPC timestamps on the recording timeline. Missing
+packets during silence are padded, with 100 ms left for delayed packets while
+recording. Final PCM is capped to the recording deadline. AAC uses 1024-sample
+blocks, so shorter recordings can have up to one AAC block (about 21.3 ms) of
+container padding. The 600-second ceiling at 48 kHz is an exact AAC-block
+multiple. Sources played to a different output, exclusive/protected audio and
+hardware-offloaded streams are not guaranteed to be captured.
+
+On a host with no active audio output, install/enable an appropriate playback
+device separately. One option is [VB-CABLE](https://vb-audio.com/Cable/), a
+third-party donationware driver. Download from its publisher; it is not bundled
+with this MIT project. Choose CABLE Input as the playback output. Loopback uses
+that render endpoint; the CABLE Output recording endpoint is not used. The
+ordinary microphone remains outside the capture path.
+
+Explicit audio acceptance (plays a quiet two-second test tone when an output
+is available):
+
+```powershell
+node scripts/Test-CaptureAudio.mjs --live D:\AgentData\desktop-hid\native\ScreenCapture.exe D:\AgentData\capture-tests\audio
+# Optional one-minute real-loopback run:
+node scripts/Test-CaptureAudio.mjs --live D:\AgentData\desktop-hid\native\ScreenCapture.exe D:\AgentData\capture-tests\audio-minute 60
+```
+
+It checks a separately marked synthetic diagnostic source, decoded AAC timing,
+actual Windows playback/loopback when available, missing-output fallback and
+explicit audio opt-out. `self-test-av` is an explicit native diagnostic; the MCP
+record command cannot select its synthetic source. Never treat synthetic test
+results as evidence of real endpoint capture.

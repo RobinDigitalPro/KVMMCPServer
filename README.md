@@ -1,12 +1,13 @@
 # KVMMCPServer
 
 Local Windows desktop control for coding agents: a stdio MCP server, shared
-controller, primary-display screenshots, silent MP4 recordings up to ten minutes,
+controller, primary-display screenshots, MP4 recordings up to ten minutes with
+system playback audio by default when available,
 and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.3.0** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.4.0** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
@@ -15,6 +16,9 @@ shared-controller live test. See [acceptance](docs/ACCEPTANCE.md).
 
 This is a development release of [KVMMCPServer](https://github.com/RobinDigitalPro/KVMMCPServer), using the OpenDesktopHID driver. No production-signed driver distribution is provided. Other displays/DPI and physical
 hotkey acceptance remain separate tests.
+
+Secure-desktop/UAC support is still a separate capability; the current tools
+stop there. See the [implementation investigation](docs/SECURE_DESKTOP_PLAN.md).
 
 ## Architecture
 
@@ -46,7 +50,7 @@ No ordinary test injects desktop input. Operational data belongs outside source:
 .\scripts\Test-Local.ps1 -DataRoot D:\AgentData\desktop-hid -Function all
 ```
 
-The short suite has 39 JavaScript tests and 18 native HID checks. Stop the live
+The short suite has 41 JavaScript tests and 18 native HID checks. Stop the live
 controller before rebuilding its executable. The driver has a separate portable
 C contract (12 checks), package-validation tests (four cases), and explicit live
 acceptance scripts. Live scripts are never included in the ordinary suite.
@@ -75,11 +79,16 @@ Eleven tools: `hid_status`, `hid_capture`, `hid_acquire`, `hid_mouse_relative`,
 Capture and input require the acquiring connection's token. The owner/job labels
 are descriptive; the controller assigns the connection identity.
 
-For faster PNG/JPEG screenshots and silent H.264/MP4 recordings, build the
+For faster PNG/JPEG screenshots and H.264/MP4 recordings, build the
 persistent `ScreenCapture.exe` beside the HID helper. Recordings have a native
 **600-second hard limit**, independent of the short input lease, and stop on
 owner disconnect or operator/session stop. See [screen capture and demo
 examples](docs/SCREEN_CAPTURE.md). There is no livestream endpoint.
+System audio uses Windows WASAPI loopback from the default playback output and
+is encoded as AAC; microphones are never opened. Missing audio devices/codecs
+fall back to video-only recording with an explicit `audioStatus`/`audioReason`.
+An optional virtual audio output can provide a playback endpoint on a headless
+host. Third-party audio drivers are installed separately and are not bundled.
 
 ```powershell
 node src/manage.mjs status --data-root D:\AgentData\desktop-hid

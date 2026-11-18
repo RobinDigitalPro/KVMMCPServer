@@ -15,7 +15,7 @@ $taskCapture = [IO.Path]::GetFullPath($CaptureExecutable)
 foreach ($taskValue in @($taskConfig.sourceRoot,$taskConfig.dataRoot,$taskConfig.nativeExecutable,$taskConfig.nodeExecutable,$CaptureExecutable)) { if (-not [IO.Path]::IsPathRooted($taskValue)) { throw 'Deployment paths must be absolute' } }
 if (-not (Test-Path -LiteralPath (Join-Path $taskTarget 'src\mcp.mjs')) -or -not (Test-Path -LiteralPath $taskCapture) -or [IO.Path]::GetFileName($taskCapture) -ne 'ScreenCapture.exe') { throw 'Expected installed source and reviewed ScreenCapture.exe' }
 $taskCandidateVersion = (Get-Content -LiteralPath (Join-Path $taskSource 'package.json') -Raw | ConvertFrom-Json).version
-if ($taskCandidateVersion -ne '0.3.0') { throw 'This updater expects the reviewed 0.3.0 source' }
+if ($taskCandidateVersion -notin @('0.3.0','0.4.0')) { throw 'This updater expects a reviewed 0.3.0 or 0.4.0 source release' }
 # Validate the allowlist before stopping anything.
 $taskFiles = @(git -C $taskSource ls-files)
 if ($LASTEXITCODE -ne 0 -or $taskFiles.Count -lt 55) { throw 'Run from a complete reviewed Git checkout' }
@@ -38,7 +38,7 @@ if ($taskStatus -and $taskStatus.running) {
 } elseif (Test-Path -LiteralPath (Join-Path $taskData 'controller\broker.lock')) { throw 'Inspect the existing controller lock before updating; source was not changed' }
 if ($CheckOnly) { Write-Output 'Controller is offline; no update was applied (CheckOnly).'; return }
 # Explicit tracked-source allowlist; no local configuration, binaries or recordings.
-$taskBackup = Join-Path $taskData ('updates\0.3.0-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '\backup')
+$taskBackup = Join-Path $taskData ('updates\' + $taskCandidateVersion + '-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '\backup')
 [IO.Directory]::CreateDirectory($taskBackup) | Out-Null
 $taskEncoding = New-Object System.Text.UTF8Encoding($false)
 Copy-Item -LiteralPath $Configuration -Destination (Join-Path $taskBackup 'deployment.local.json')
@@ -58,7 +58,7 @@ $taskNativeTarget = Join-Path ([IO.Path]::GetDirectoryName($taskConfig.nativeExe
 if (Test-Path -LiteralPath $taskNativeTarget) { Copy-Item -LiteralPath $taskNativeTarget -Destination (Join-Path $taskBackup 'ScreenCapture.exe') }
 if ($taskCapture -ne $taskNativeTarget) { Copy-Item -LiteralPath $taskCapture -Destination $taskNativeTarget -Force }
 if ((Get-FileHash -LiteralPath $taskCapture).Hash -ne (Get-FileHash -LiteralPath $taskNativeTarget).Hash) { throw 'Capture binary hash mismatch' }
-$taskConfig.mcpVersion = '0.3.0'
+$taskConfig.mcpVersion = $taskCandidateVersion
 $taskConfig | Add-Member -NotePropertyName captureExecutable -NotePropertyValue $taskNativeTarget -Force
 $taskConfig | Add-Member -NotePropertyName publicCommit -NotePropertyValue $taskCommit -Force
 [IO.File]::WriteAllText([IO.Path]::GetFullPath($Configuration), ($taskConfig | ConvertTo-Json -Depth 12) + [Environment]::NewLine, $taskEncoding)
@@ -75,7 +75,7 @@ if (Test-Path -LiteralPath $taskBinaryManifestPath) {
 & $taskConfig.nodeExecutable (Join-Path $taskTarget 'src\manage.mjs') start --live $taskConfig.nativeExecutable --data-root $taskData
 if ($LASTEXITCODE -ne 0) { throw "Start failed; inspect logs. Backup: $taskBackup" }
 $taskActivated = Get-Content -LiteralPath $taskStatusPath -Raw | ConvertFrom-Json
-if ($taskActivated.version -ne '0.3.0') { throw 'Started controller did not report version 0.3.0; inspect logs before reconnecting' }
+if ($taskActivated.version -ne $taskCandidateVersion) { throw 'Started controller did not report the expected version; inspect logs before reconnecting' }
 if ($taskConfig.availableUpdate) {
     $taskConfig.availableUpdate.activationPending = $false
     $taskConfig.availableUpdate | Add-Member -NotePropertyName activatedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
@@ -84,12 +84,12 @@ if ($taskConfig.availableUpdate) {
 $taskVerificationPath = Join-Path $taskData 'status.json'
 if (Test-Path -LiteralPath $taskVerificationPath) {
     $taskVerification = Get-Content -LiteralPath $taskVerificationPath -Raw | ConvertFrom-Json
-    $taskVerification.version = '0.3.0'; $taskVerification.updatedUtc = [DateTime]::UtcNow.ToString('o')
+    $taskVerification.version = $taskCandidateVersion; $taskVerification.updatedUtc = [DateTime]::UtcNow.ToString('o')
     $taskVerification.sourceFileCount = $taskFiles.Count
-    $taskVerification.javascriptTests = 39
+    $taskVerification.javascriptTests = if ($taskCandidateVersion -eq '0.4.0') { 41 } else { 39 }
     if ($taskVerification.mcp) { $taskVerification.mcp.toolCount = 11 }
     $taskVerification.sourceManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $taskData 'source-manifest.json')).Hash
     if ($taskVerification.availableUpdate) { $taskVerification.availableUpdate.activationPending = $false }
     [IO.File]::WriteAllText($taskVerificationPath, ($taskVerification | ConvertTo-Json -Depth 16), $taskEncoding)
 }
-Write-Output "Installed 0.3.0. Reload the MCP connection for eleven tools. Backup: $taskBackup"
+Write-Output "Installed $taskCandidateVersion. Reload the MCP connection for current schemas/descriptions. Backup: $taskBackup"

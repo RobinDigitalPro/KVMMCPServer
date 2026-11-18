@@ -57,7 +57,7 @@ export class DesktopController {
   status() {
     const native = this.#transport?.status?.();
     const control = this.#session?.status() ?? { owner: null, leaseRemainingMs: 0, operatorStopped: this.#stopped.stopped, faulted: false };
-    return { version: '0.3.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
+    return { version: '0.4.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
       control: { ...control, operatorStopped: this.#stopped.stopped || (!this.#closing && control.operatorStopped), jobId: control.owner ? this.#owner?.jobId ?? null : null, clientId: control.owner ? this.#owner?.client ?? null : null },
       operatorStop: this.#stopped, clients: this.#clients.size, activeCaptures: this.#captures.size, lastAction: this.#lastAction ?? null,
       screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
@@ -128,6 +128,7 @@ export class DesktopController {
         if (this.#simulated || !this.#transport.recordingAvailable) throw new Error('Screen recording unavailable; install ScreenCapture.exe');
         if (['starting', 'recording', 'stopping'].includes(this.#recording?.state)) throw new Error('A recording is already active');
         const { token, ...options } = args;
+        options.systemAudio ??= true;
         const recordingId = randomUUID();
         this.#recording = { recordingId, clientId: client, owner: action.owner, jobId: action.jobId, state: 'starting' };
         try {

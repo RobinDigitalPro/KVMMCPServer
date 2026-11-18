@@ -1,5 +1,40 @@
 # Desktop acceptance
 
+## System playback audio, 0.4.0
+
+The JavaScript suite has 41 passing tests, including default-enabled system
+audio, explicit opt-out and unavailable-audio metadata. The user-mode helper
+builds with warnings treated as errors; the HID kernel driver is unchanged.
+
+On 18 November 2026 the host initially had no active render endpoint. An actual
+recording requested system audio by default, returned audio=false with an
+unavailable reason, and still produced a finalized, decodable video. After
+separate installation of the publisher's signed virtual cable, actual Windows
+playback/loopback was checked:
+
+- A five-second 1280x720 recording contained a 48-kHz stereo AAC track and 75
+  video frames. A quiet test WAV was played through Windows, not supplied to the
+  recording encoder; the resulting AAC decoded to end-of-stream with nonzero
+  signal (observed peak 1156, normalized RMS approximately 0.0135).
+- Explicit systemAudio=false produced a video-only MP4 and disabled metadata.
+- A full one-minute real-loopback run completed with 900 video frames and
+  2880000 submitted stereo PCM frames. AAC decoded to end-of-stream at 48 kHz,
+  stereo, with test signals near 993 ms and again through 59233 ms. The decoded
+  container audio duration was 60010 ms because of AAC block padding; native
+  video/source duration was 60000 ms. Both early and late playback were present.
+- A separately marked synthetic diagnostic tested the same muxer/clock without
+  an endpoint. A pulse beginning at 500 ms and ending at 2000 ms decoded at
+  approximately 499..1999 ms. This is timing/mux evidence, not real loopback
+  evidence. Its source cannot be selected through MCP.
+- An earlier real-loopback attempt was interrupted by DXGI display access loss;
+  it finalized its partial video and captured audio. The successful retry is
+  separate evidence; desktop-transition support is not claimed.
+
+AAC block padding can extend a short container by less than one 1024-sample
+block. The user-facing 600-second limit and native source-sample deadlines
+remain enforced. Microphone capture and secure-desktop support were not added.
+The latter has a separate [design investigation](SECURE_DESKTOP_PLAN.md).
+
 ## Screenshots and recording, 0.3.0
 
 On 18 November 2026 the separate user-mode DXGI/WIC/Media Foundation helper

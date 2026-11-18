@@ -97,7 +97,7 @@ viewer separately.
 
 Read live-status.json for active owner/job, last action and native health.
 events.jsonl records action/result metadata without tokens or raw key contents.
-Captures are saved under captures/. Silent MP4 recordings (maximum 600 seconds)
+Captures are saved under captures/. MP4 recordings (maximum 600 seconds)
 and JSON receipts go under recordings/. Start a recording with an input lease,
 then release input; the recording remains bound to that MCP connection. See
 [SCREEN_CAPTURE.md](SCREEN_CAPTURE.md) for start/status/stop examples and limits.
@@ -111,3 +111,8 @@ is a boundary between Windows accounts, not a sandbox between arbitrary programs
 already running as that same user. There is no remote MCP gateway, host-shell
 tool or automatic administrator grant. Remote Codexes submit jobs through the
 existing handoff to local agents; do not launch the host EXE from another pc.
+
+System playback audio is enabled by default when a default output is available.
+Inspect recording.audioStatus/audioReason; unavailable audio leaves video
+working. The recorder never opens a microphone. Explicit systemAudio=false opts
+out for a particular recording. See SCREEN_CAPTURE.md for device/timing details.

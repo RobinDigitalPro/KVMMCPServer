@@ -82,11 +82,12 @@ export class CaptureWorker extends EventEmitter {
     if ((await fs.stat(expected)).size > 16 * 1024 * 1024) throw new Error('Capture exceeds 16 MiB image limit');
     return { ...metadata, data: (await fs.readFile(expected, { signal })).toString('base64') };
   }
-  async startRecording({ recordingId = randomUUID(), maxSeconds = 600, fps = 15, maxWidth = 1920, bitrate = 6000000 } = {}) {
+  async startRecording({ recordingId = randomUUID(), maxSeconds = 600, fps = 15, maxWidth = 1920, bitrate = 6000000, systemAudio = true } = {}) {
     if (!/^[a-f0-9-]{36}$/.test(recordingId) || !Number.isInteger(maxSeconds) || maxSeconds < 1 || maxSeconds > 600 || !Number.isInteger(fps) || fps < 1 || fps > 30 || !Number.isInteger(maxWidth) || maxWidth < 0 || maxWidth > 3840 || !Number.isInteger(bitrate) || bitrate < 1000000 || bitrate > 20000000) throw new Error('Invalid recording options; maximum duration is 600 seconds');
     if (this.#starting || this.#recording?.state === 'recording') throw new Error('A recording is already active');
+    if (typeof systemAudio !== 'boolean') throw new Error('systemAudio must be boolean');
     this.#starting = (async () => {
-      const value = await this.#request('record', [recordingId, maxSeconds, fps, maxWidth, bitrate]);
+      const value = await this.#request('record', [recordingId, maxSeconds, fps, maxWidth, bitrate, systemAudio ? 1 : 0]);
       // A very short recording can finish before its start acknowledgement is read.
       if (this.#recording?.recordingId !== recordingId || this.#recording.state === 'recording') this.#update(value);
       return this.#recording;

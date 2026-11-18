@@ -11,7 +11,7 @@ if (process.argv[2] !== '--live' || !path.isAbsolute(process.argv[3] ?? '') || !
 const executable = process.argv[3], root = externalRoot(process.argv[4]);
 await fs.mkdir(root, { recursive: true });
 const worker = new CaptureWorker(executable, root);
-const result = { startedUtc: new Date().toISOString(), inputSent: false, audio: false, screenshots: [] };
+const result = { startedUtc: new Date().toISOString(), inputSent: false, systemAudioRequested: true, screenshots: [] };
 try {
   for (const options of [{ format: 'png' }, { format: 'jpeg', maxWidth: 1280 }, { format: 'png', maxWidth: 960 }]) {
     const start = performance.now(), image = await worker.snapshot(options);

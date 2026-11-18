@@ -9,5 +9,5 @@
   "manifestSha256": "REPLACE_WITH_REVIEWED_SIGNED_PACKAGE_MANIFEST_SHA256",
   "liveEnabled": false,
   "driverInstalled": false,
-  "mcpVersion": "0.3.0"
+  "mcpVersion": "0.4.0"
 }
