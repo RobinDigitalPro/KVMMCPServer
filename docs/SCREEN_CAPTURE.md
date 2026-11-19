@@ -25,7 +25,7 @@ zero-copy GPU encoder. No proprietary capture SDK is bundled.
 Do not replace running executables or restart a controller that another agent is
 using. Stage a versioned build, arrange an idle checkpoint, close the controller
 normally, copy the reviewed executable and source, then start it again. Reload
-the MCP connection so its catalog contains eleven tools. A running 0.2.0 adapter
+the MCP connection so its catalog contains fourteen tools. A running 0.2.0 adapter
 or controller keeps its old code until restarted. Never clear an operator stop
 as part of an upgrade. See `hid_status.screenRecording` for availability.
 

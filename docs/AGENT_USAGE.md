@@ -18,7 +18,7 @@ For Codex registration, run the supplied installation script as the normal user:
 .\scripts\Install-McpConnection.ps1 -NodePath C:\Tools\node.exe -NativeExecutable D:\AgentData\desktop-hid\native\HidTransport.exe -DataRoot D:\AgentData\desktop-hid
 ```
 
-It registers eleven tools and leaves the client's approval policy unchanged.
+It registers fourteen tools and leaves the client's approval policy unchanged.
 Reload the client MCP connection if its catalog has not refreshed. A terminal
 launch alone does not attach tools to a chat.
 
@@ -68,6 +68,33 @@ Buttons are the complete held state: left=1, right=2, middle=4. Click with 1 the
 before switching relative/absolute collections. Keyboard usages are physical:
 usage 4 is Q on the tested Belgian AZERTY layout. Left Ctrl/Shift/Alt/GUI bits
 are 1/2/4/8; right are 16/32/64/128. This version has no Unicode typing tool.
+
+## Individual keys and timed presses
+
+`hid_key_down` adds one held key and `hid_key_up` removes one, preserving other
+held keys/modifiers. They compose with `hid_keyboard`, which still replaces the
+complete keyboard state. Each tool takes `key`: physical HID usage 4..101, or
+modifier usage 224..231 (left Ctrl/Shift/Alt/GUI, then right Ctrl/Shift/Alt/GUI).
+
+```json
+{"name":"hid_key_down","arguments":{"token":"LEASE_TOKEN","key":224}}
+{"name":"hid_key_press","arguments":{"token":"LEASE_TOKEN","key":4,"durationMs":250}}
+{"name":"hid_key_up","arguments":{"token":"LEASE_TOKEN","key":224}}
+```
+
+This holds left Ctrl, presses physical usage 4 for 250 ms, then releases Ctrl.
+On Belgian AZERTY that usage is Q, so choose usages for the target's keyboard
+layout. `durationMs` defaults to 100; integers 1..10000 are accepted. The lease
+must cover the duration plus a 50 ms release margin. The local controller waits
+between down/up; client/network latency is not used as the timer. `elapsedMs`
+includes local transport acknowledgements and scheduling, so this is not hard
+real-time timing. A held key may generate normal Windows key repeats.
+
+A timed press is serialized with other input and restores the preceding keyboard
+state after success. Pressing a key already held is refused. Cancellation,
+owner disconnect, explicit lease release, emergency stop or lease expiry release
+all input. A detected desktop transition cancels a timed hold and discards the
+cached modifiers. These tools do not enter keys on UAC/credential desktops.
 
 ## Intervention, cancellation and disconnect
 

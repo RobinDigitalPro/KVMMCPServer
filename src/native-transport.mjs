@@ -25,7 +25,7 @@ export function secureInputDeadline(leaseDeadline, capturedAt, now = Date.now())
 
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
-  #captureWorker; #recordingListeners = new Set();
+  #captureWorker; #recordingListeners = new Set(); #inputResetEpoch = 0;
   #securePrompt; #secureCapturedAt = 0; #inputDeadline; #secureInputPending = false; #completedSecureClick;
   constructor(executable, { dataRoot, onFault = () => {} } = {}) {
     if (typeof executable !== 'string' || !executable) throw new TypeError('native executable path required');
@@ -43,7 +43,7 @@ export class NativeTransport {
       try {
         const message = JSON.parse(line);
         if (message.type === 'ready') { this.#metadata = message; this.#resolveReady(message); }
-        else if (message.type === 'desktop_transition') { this.#metadata = { ...this.#metadata, inputPaused: message.inputPaused, desktop: message.desktop }; if (!message.inputPaused) this.#securePrompt = undefined; }
+        else if (message.type === 'desktop_transition') { this.#metadata = { ...this.#metadata, inputPaused: message.inputPaused, desktop: message.desktop }; if (message.inputPaused) this.#inputResetEpoch++; else this.#securePrompt = undefined; }
         else if (message.type === 'stopped' || (message.ok === false && message.id === undefined)) this.#fail(new Error(message.error ?? 'local operator or native watchdog stopped the session'));
         else {
           const request = this.#pending.get(message.id);
@@ -66,7 +66,7 @@ export class NativeTransport {
     const timer = setTimeout(() => this.#fail(new Error('native startup timed out')), 10000);
     try { return await this.#ready; } finally { clearTimeout(timer); }
   }
-  status() { return { connected: Boolean(this.#metadata) && !this.#fatal && this.#child.exitCode === null, ...this.#metadata, ...(this.#fatal ? { error: this.#fatal.message } : {}) }; }
+  status() { return { connected: Boolean(this.#metadata) && !this.#fatal && this.#child.exitCode === null, ...this.#metadata, inputResetEpoch: this.#inputResetEpoch, ...(this.#fatal ? { error: this.#fatal.message } : {}) }; }
   get captureAvailable() { return Boolean(this.#dataRoot); }
   get recordingAvailable() { return Boolean(this.#dataRoot && existsSync(path.join(path.dirname(this.#executable), 'ScreenCapture.exe'))); }
   #screen() {

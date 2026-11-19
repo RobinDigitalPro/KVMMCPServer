@@ -4,6 +4,7 @@ const token = z.string().min(1).max(100);
 const buttons = z.number().int().min(0).max(7).optional();
 const count = z.number().int().min(-32767).max(32767).optional();
 const coordinate = z.number().int().min(0).max(32767);
+const key = z.union([z.number().int().min(4).max(101), z.number().int().min(224).max(231)]);
 const define = (name, description, shape, readOnly = false) => ({
   name, description, schema: z.strictObject(shape),
   annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: false },
@@ -18,6 +19,9 @@ export const definitions = [
   define('hid_mouse_relative', 'Move by relative HID counts; buttons is the complete held state (left=1/right=2/middle=4); wheel is in detents.', { token, dx: count, dy: count, wheel: count, buttons }),
   define('hid_mouse_absolute', 'Move to primary-display HID coordinates 0..32767. Release buttons before switching mouse collections. Other display layouts require calibration.', { token, x: coordinate, y: coordinate, wheel: z.number().int().min(-127).max(127).optional(), buttons }),
   define('hid_keyboard', 'Set the complete physical keyboard state: modifier bits and up to six distinct HID usages. Empty keys with modifiers=0 releases all keys. No Unicode typing.', { token, modifiers: z.number().int().min(0).max(255).optional(), keys: z.array(z.number().int().min(4).max(101)).max(6).optional() }),
+  define('hid_key_down', 'Hold one physical HID key, preserving other held keys. key=4..101 or modifier usage 224..231. Ordinary desktop only; lease expiry/disconnect releases input.', { token, key }),
+  define('hid_key_up', 'Release one physical HID key, preserving other held keys. key=4..101 or modifier usage 224..231. Ordinary desktop only.', { token, key }),
+  define('hid_key_press', 'Press one physical HID key for durationMs (default 100, range 1..10000), then restore the previous keyboard state. Timing runs in the local controller and is approximate, not hard real time. Requires enough lease time; cancellation/disconnect releases input. Ordinary desktop only; key must not already be held.', { token, key, durationMs: z.number().int().min(1).max(10000).optional() }),
   define('hid_release', 'Release this connection\'s lease and all held keys/buttons.', { token }),
   define('hid_emergency_stop', 'Release input, cancel captures and persist operator stop across controller restarts. Only explicit local operator resume can clear it.', {}),
 ];

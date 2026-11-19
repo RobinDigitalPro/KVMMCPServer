@@ -14,13 +14,20 @@ test('official MCP SDK client discovers and calls the real stdio server', async 
   let errors = ''; transport.stderr.on('data', chunk => { errors += chunk; });
   try {
     await client.connect(transport);
-    assert.equal((await client.listTools()).tools.length, 11);
+    const catalog = (await client.listTools()).tools;
+    assert.equal(catalog.length, 14);
+    assert.ok(['hid_key_down', 'hid_key_up', 'hid_key_press'].every(name => catalog.some(tool => tool.name === name)));
     const status = text(await client.callTool({ name: 'hid_status', arguments: {} }));
     assert.equal(status.simulated, true);
     const lease = text(await client.callTool({ name: 'hid_acquire', arguments: { owner: 'sdk-test' } }));
     assert.equal((await client.callTool({ name: 'hid_mouse_relative', arguments: { token: lease.token, dx: 128 } })).isError, undefined);
     const bad = await client.callTool({ name: 'hid_keyboard', arguments: { token: lease.token, keys: [4, 4] } });
     assert.equal(bad.isError, true);
+    assert.notEqual((await client.callTool({ name: 'hid_key_down', arguments: { token: lease.token, key: 225 } })).isError, true);
+    const timed = text(await client.callTool({ name: 'hid_key_press', arguments: { token: lease.token, key: 4, durationMs: 30 } }));
+    assert.equal(timed.durationMs, 30);
+    assert.ok(timed.elapsedMs >= 25);
+    assert.notEqual((await client.callTool({ name: 'hid_key_up', arguments: { token: lease.token, key: 225 } })).isError, true);
     await client.callTool({ name: 'hid_release', arguments: { token: lease.token } });
     assert.equal(text(await client.callTool({ name: 'hid_status', arguments: {} })).control.owner, null);
   } finally { await client.close(); }

@@ -44,6 +44,7 @@ export class DesktopController {
   }
   attach(label = 'local-agent') { const id = randomUUID(); this.#clients.set(id, String(label).slice(0, 100)); return id; }
   async detach(client) {
+    if (this.#owner?.client === client) this.#session?.cancelPendingInput(this.#owner.token, 'Agent disconnected');
     if (this.#owner?.client === client) this.#transport?.cancelPendingUacInput?.();
     for (const capture of this.#captures.values()) if (capture.client === client) capture.abort.abort(new Error('Agent disconnected'));
     this.#clients.delete(client);
@@ -58,7 +59,7 @@ export class DesktopController {
   status() {
     const native = this.#transport?.status?.();
     const control = this.#session?.status() ?? { owner: null, leaseRemainingMs: 0, operatorStopped: this.#stopped.stopped, faulted: false };
-    return { version: '0.5.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
+    return { version: '0.6.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
       control: { ...control, operatorStopped: this.#stopped.stopped || (!this.#closing && control.operatorStopped), jobId: control.owner ? this.#owner?.jobId ?? null : null, clientId: control.owner ? this.#owner?.client ?? null : null },
       operatorStop: this.#stopped, clients: this.#clients.size, activeCaptures: this.#captures.size, lastAction: this.#lastAction ?? null,
       screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
@@ -107,7 +108,8 @@ export class DesktopController {
         return result({ ...lease, jobId: args.jobId ?? null, simulated: this.#simulated, inputSent: false });
       }
       if (this.#owner?.client !== client || this.#owner.token !== args.token) throw new Error('Lease belongs to another connection or is invalid');
-      await this.#session.assertLease(args.token);
+      // Release must reach the timed input without queuing behind its hold.
+      if (name !== 'hid_release') await this.#session.assertLease(args.token);
       this.#transport?.setInputDeadline?.(Date.now() + this.#session.status().leaseRemainingMs);
       cancelUac = () => this.#transport?.cancelPendingUacInput?.();
       signal?.addEventListener('abort', cancelUac, { once: true });
@@ -153,8 +155,9 @@ export class DesktopController {
         await this.#session.release(args.token); this.#owner = undefined;
       } else {
         const { token, ...options } = args;
-        const method = { hid_mouse_relative: 'moveRelative', hid_mouse_absolute: 'moveAbsolute', hid_keyboard: 'keyboard' }[name];
-        await this.#session[method](token, options, { signal });
+        const method = { hid_mouse_relative: 'moveRelative', hid_mouse_absolute: 'moveAbsolute', hid_keyboard: 'keyboard', hid_key_down: 'keyDown', hid_key_up: 'keyUp', hid_key_press: 'keyPress' }[name];
+        const details = await this.#session[method](token, options, { signal });
+        if (details) response = result({ ok: true, simulated: this.#simulated, inputSent: !this.#simulated, ...details });
       }
       action.state = 'completed'; action.finishedUtc = new Date().toISOString();
       await this.publish({ event: 'action_finished', ...action });

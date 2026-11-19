@@ -108,7 +108,7 @@ namespace OpenDesktopHid
                             if (type == 0 && size >= headerSize + 24)
                                 record = new { sequence = ++sequence, kind = "mouse", absolute = (Marshal.ReadInt16(raw, offset) & 1) != 0, buttons = (ushort)Marshal.ReadInt16(raw, offset + 4), wheelData = Marshal.ReadInt16(raw, offset + 6), x = Marshal.ReadInt32(raw, offset + 12), y = Marshal.ReadInt32(raw, offset + 16), cursorX = cursor.X, cursorY = cursor.Y };
                             if (type == 1 && size >= headerSize + 16)
-                                record = new { sequence = ++sequence, kind = "keyboard", scanCode = (ushort)Marshal.ReadInt16(raw, offset), flags = (ushort)Marshal.ReadInt16(raw, offset + 2), virtualKey = (ushort)Marshal.ReadInt16(raw, offset + 6) };
+                                record = new { sequence = ++sequence, kind = "keyboard", monotonicTicks = System.Diagnostics.Stopwatch.GetTimestamp(), ticksPerSecond = System.Diagnostics.Stopwatch.Frequency, scanCode = (ushort)Marshal.ReadInt16(raw, offset), flags = (ushort)Marshal.ReadInt16(raw, offset + 2), virtualKey = (ushort)Marshal.ReadInt16(raw, offset + 6) };
                             if (record != null)
                             {
                                 string line = json.Serialize(record);

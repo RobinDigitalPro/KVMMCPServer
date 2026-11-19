@@ -61,7 +61,8 @@ without the optional service.
 
 ## Existing agent workflow
 
-The same eleven MCP tools remain. Acquire a short lease and inspect a fresh
+Consent uses the existing capture/mouse tools; 0.6.0 has fourteen tools in total,
+including the ordinary-desktop key down/up/press additions. Acquire a short lease and inspect a fresh
 `hid_capture` image. On a real Windows consent dialog it reports
 `desktop="Winlogon"` and a short-lived `uacPromptId`; this is internally forwarded
 to the input helper. The normal HID writer pauses, neutralizes its state and

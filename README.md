@@ -7,7 +7,7 @@ and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.5.0** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.6.0** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
@@ -18,9 +18,15 @@ This is a development release of [KVMMCPServer](https://github.com/RobinDigitalP
 hotkey acceptance remain separate tests.
 
 An optional, separately installed SYSTEM service provides UAC screenshots and
-one-shot consent clicks using the same eleven MCP tools. Approval is restricted
+one-shot consent clicks through the capture/mouse tools. Approval is restricted
 to administrator-staged executable paths and SHA-256 hashes. See
 [secure desktop setup and limits](docs/SECURE_DESKTOP.md).
+
+The fourteen tools also include `hid_key_down`, `hid_key_up` and
+`hid_key_press(durationMs)`. Physical key usages include modifiers (224..231).
+Timed presses run locally for 1..10000 ms, preserve other held keys and release
+on cancellation, disconnect, desktop transition or lease expiry. See
+[keyboard examples](docs/AGENT_USAGE.md#individual-keys-and-timed-presses).
 
 ## Architecture
 
@@ -52,7 +58,7 @@ No ordinary test injects desktop input. Operational data belongs outside source:
 .\scripts\Test-Local.ps1 -DataRoot D:\AgentData\desktop-hid -Function all
 ```
 
-The short suite has 41 JavaScript tests and 18 native HID checks. Stop the live
+The short suite has 55 JavaScript tests and 18 native HID checks. Stop the live
 controller before rebuilding its executable. The driver has a separate portable
 C contract (12 checks), package-validation tests (four cases), and explicit live
 acceptance scripts. Live scripts are never included in the ordinary suite.
