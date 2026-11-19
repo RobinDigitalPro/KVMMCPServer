@@ -19,9 +19,9 @@ $taskCandidateVersion = (Get-Content -LiteralPath (Join-Path $taskSource 'packag
 if ($taskCandidateVersion -notin @('0.3.0','0.4.0','0.5.0')) { throw 'This updater expects a reviewed 0.3.0, 0.4.0 or 0.5.0 source release' }
 if ($taskCandidateVersion -eq '0.5.0' -and (-not $HidExecutable -or -not [IO.Path]::IsPathRooted($HidExecutable) -or [IO.Path]::GetFileName($HidExecutable) -ne 'HidTransport.exe' -or -not (Test-Path -LiteralPath $HidExecutable))) { throw '0.5.0 also requires the matching reviewed -HidExecutable' }
 # Validate the allowlist before stopping anything.
-$taskFiles = @(git -C $taskSource ls-files)
+$taskFiles = @(git -c "safe.directory=$taskSource" -C $taskSource ls-files)
 if ($LASTEXITCODE -ne 0 -or $taskFiles.Count -lt 55) { throw 'Run from a complete reviewed Git checkout' }
-$taskCommit = (git -C $taskSource rev-parse HEAD).Trim()
+$taskCommit = (git -c "safe.directory=$taskSource" -C $taskSource rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the reviewed source commit' }
 $taskStatusPath = Join-Path $taskData 'live-status.json'
 $taskStatus = if (Test-Path -LiteralPath $taskStatusPath) { Get-Content -LiteralPath $taskStatusPath -Raw | ConvertFrom-Json } else { $null }
