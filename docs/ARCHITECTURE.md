@@ -1,7 +1,7 @@
 # Local controller architecture
 
 The stdio adapter uses the official MCP SDK for message validation, tool schemas,
-protocol compatibility and cancellation. It forwards only the fourteen declared
+protocol compatibility and cancellation. It forwards only the seventeen declared
 desktop tools to a shared local controller. No arbitrary command execution is
 accepted by that controller.
 
@@ -9,7 +9,7 @@ Each adapter has its own internal TCP connection and a server-issued random
 connection ID. A lease binds its opaque token to that connection. Human-readable
 agent, owner and job labels help monitoring; they do not establish identities or
 per-role permissions. All authorized local adapters currently have the same
-fourteen tools. Windows accounts and the agent's surrounding execution policy
+seventeen tools. Windows accounts and the agent's surrounding execution policy
 remain the access boundaries.
 
 The controller binds an ephemeral port on 127.0.0.1 only. Its random 256-bit

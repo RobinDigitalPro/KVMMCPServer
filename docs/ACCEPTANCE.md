@@ -1,5 +1,27 @@
 # Desktop acceptance
 
+## Text, chords and atomic clicks, 0.7.0
+
+The suite has 67 passing JavaScript tests and nineteen native checks. Three
+tools add Windows-layout HID text, locally timed chords and single-call mouse
+clicks. The SYSTEM consent service and kernel driver are unchanged.
+
+A physical-console MCP test in our own foreground receiver matched the complete
+55-character sample, including Belgian (Period) letters/digits, AltGr symbols
+(`@`, euro, backslash, brackets and braces), direct accents, composed dead-key
+accents (`êëôûï`), literal accents, Enter and Tab. A second mixed-case sample
+matched with Caps Lock enabled; the original lock state was restored. Ctrl+Alt
+completed, Ctrl+A selected the entire sample, and explicit-position/current-
+position clicks each activated the receiver's test button once. An unsupported
+emoji string was refused before its ordinary-text prefix could be typed.
+
+`scripts/Test-ConvenienceInput.mjs --live ABS_HID_EXE ABS_OBSERVER_EXE ABS_DATA_ROOT`
+reproduces this explicit test using the receiver built by `Build-Observer.ps1`.
+Inspect its screenshot before sending `run`. The test uses an isolated data
+root, ordinary user rights, and a topmost receiver above the paused target.
+It never types into the paused application. A startup-failure regression also
+checks that failed status publication closes the native transport.
+
 ## Individual keys and local timing, 0.6.0
 
 The JavaScript suite has 55 passing tests. The official MCP SDK discovers all

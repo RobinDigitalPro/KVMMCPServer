@@ -15,8 +15,8 @@ test('official MCP SDK client discovers and calls the real stdio server', async 
   try {
     await client.connect(transport);
     const catalog = (await client.listTools()).tools;
-    assert.equal(catalog.length, 14);
-    assert.ok(['hid_key_down', 'hid_key_up', 'hid_key_press'].every(name => catalog.some(tool => tool.name === name)));
+    assert.equal(catalog.length, 17);
+    assert.ok(['hid_key_down', 'hid_key_up', 'hid_key_press', 'hid_type_text', 'hid_key_chord', 'hid_click'].every(name => catalog.some(tool => tool.name === name)));
     const status = text(await client.callTool({ name: 'hid_status', arguments: {} }));
     assert.equal(status.simulated, true);
     const lease = text(await client.callTool({ name: 'hid_acquire', arguments: { owner: 'sdk-test' } }));
@@ -28,6 +28,9 @@ test('official MCP SDK client discovers and calls the real stdio server', async 
     assert.equal(timed.durationMs, 30);
     assert.ok(timed.elapsedMs >= 25);
     assert.notEqual((await client.callTool({ name: 'hid_key_up', arguments: { token: lease.token, key: 225 } })).isError, true);
+    assert.notEqual((await client.callTool({ name: 'hid_key_chord', arguments: { token: lease.token, modifiers: 5, durationMs: 1 } })).isError, true);
+    assert.notEqual((await client.callTool({ name: 'hid_click', arguments: { token: lease.token, durationMs: 1 } })).isError, true);
+    assert.equal((await client.callTool({ name: 'hid_type_text', arguments: { token: lease.token, text: 'read-only simulation has no Windows layout planner' } })).isError, true);
     await client.callTool({ name: 'hid_release', arguments: { token: lease.token } });
     assert.equal(text(await client.callTool({ name: 'hid_status', arguments: {} })).control.owner, null);
   } finally { await client.close(); }

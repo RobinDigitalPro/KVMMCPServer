@@ -11,4 +11,4 @@ foreach($taskPath in @($NodePath,$NativeExecutable,$DataRoot)) { if(-not [IO.Pat
 $taskServer = Join-Path $PSScriptRoot '..\src\mcp.mjs'
 & $CodexPath mcp add $Name -- $NodePath ([IO.Path]::GetFullPath($taskServer)) --live $NativeExecutable --data-root $DataRoot --agent codex-local
 if ($LASTEXITCODE -ne 0) { throw 'Codex MCP registration failed' }
-Write-Output 'Registered fourteen local desktop tools. Reload the MCP connection in the client if its catalog is not refreshed yet.'
+Write-Output 'Registered seventeen local desktop tools. Reload the MCP connection in the client if its catalog is not refreshed yet.'

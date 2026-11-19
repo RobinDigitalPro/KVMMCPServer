@@ -18,7 +18,7 @@ if (path.resolve(root).toLowerCase().startsWith(source.toLowerCase() + path.sep)
 await fs.mkdir(root, { recursive: true });
 const log = path.join(root, 'key-events.jsonl');
 const child = spawn(observer, [log], { windowsHide: false, stdio: 'ignore' });
-const client = new Client({ name: 'key-timing-acceptance', version: '0.6.0' });
+const client = new Client({ name: 'key-timing-acceptance', version: '0.7.0' });
 const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(source, 'src/mcp.mjs'), '--live', hid, '--data-root', root, '--agent', 'key-timing-acceptance'] });
 const input = createInterface({ input: process.stdin });
 const command = new Promise(resolve => input.once('line', resolve));
@@ -39,7 +39,7 @@ const events = async () => (await fs.readFile(log, 'utf8')).replace(/^\uFEFF/, '
 try {
   for (let n = 0; n < 50; n++) { try { await foreground(); break; } catch { if (n === 49) throw new Error('Observer is not foreground'); await delay(100); } }
   await client.connect(transport);
-  receipt.toolCount = (await client.listTools()).tools.length; assert.equal(receipt.toolCount, 14);
+  receipt.toolCount = (await client.listTools()).tools.length; assert.equal(receipt.toolCount, 17);
   ({ token } = await call('hid_acquire', { owner: 'key-timing-acceptance', ttlMs: 60000 }));
   await call('hid_capture', { token, format: 'jpeg', maxWidth: 1280 });
   const frame = await call('hid_capture', { token, format: 'jpeg', maxWidth: 1280 });

@@ -33,6 +33,9 @@ namespace OpenDesktopHid
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern uint GetRawInputDeviceInfo(IntPtr device, uint command, StringBuilder data, ref uint size);
         private readonly TextBox log = new TextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical };
+        private readonly TextBox textProbe = new TextBox { Multiline = true, AcceptsTab = true, AcceptsReturn = true, Dock = DockStyle.Top, Height = 120, ScrollBars = ScrollBars.Vertical };
+        private readonly Button clickProbe = new Button { Text = "Click test (0)", Dock = DockStyle.Top, Height = 42 };
+        private int clicks;
         private readonly Label status = new Label { Dock = DockStyle.Top, Height = 65 };
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private readonly StreamWriter output;
@@ -43,14 +46,16 @@ namespace OpenDesktopHid
         internal InputObserver(string outputPath)
         {
             Text = "OpenDesktopHID Input Observer"; Width = 900; Height = 500;
+            TopMost = true; // Explicit live receiver remains visible above a paused console.
             StartPosition = FormStartPosition.CenterScreen;
             WindowState = FormWindowState.Maximized;
             output = new StreamWriter(outputPath, false, Encoding.UTF8); output.AutoFlush = true;
             statePath = outputPath + ".state.json";
             status.Text = "Receiver only. Keep this window focused. Only vmulti-compatible device events are recorded.\r\nLog: " + outputPath;
-            Controls.Add(log); Controls.Add(status);
+            Controls.Add(log); Controls.Add(textProbe); Controls.Add(clickProbe); Controls.Add(status);
+            clickProbe.Click += delegate { clicks++; clickProbe.Text="Click test ("+clicks+")"; WriteState(); };
             stateTimer.Tick += delegate { WriteState(); };
-            Shown += delegate { stateTimer.Start(); WriteState(); };
+            Shown += delegate { stateTimer.Start(); textProbe.Focus(); WriteState(); };
             FormClosed += delegate { stateTimer.Stop(); stateTimer.Dispose(); output.Dispose(); };
         }
         protected override void OnHandleCreated(EventArgs e)
@@ -69,7 +74,8 @@ namespace OpenDesktopHid
             System.Drawing.Rectangle client = RectangleToScreen(ClientRectangle);
             System.Drawing.Rectangle primary = Screen.PrimaryScreen.Bounds;
             System.Drawing.Rectangle desktop = SystemInformation.VirtualScreen;
-            File.WriteAllText(statePath, json.Serialize(new { observedUtc = DateTime.UtcNow.ToString("o"), processId = System.Diagnostics.Process.GetCurrentProcess().Id, foreground = GetForegroundWindow() == Handle, cursorX = cursor.X, cursorY = cursor.Y, clientLeft = client.Left, clientTop = client.Top, clientWidth = client.Width, clientHeight = client.Height, primaryWidth = primary.Width, primaryHeight = primary.Height, desktopLeft = desktop.Left, desktopTop = desktop.Top, desktopWidth = desktop.Width, desktopHeight = desktop.Height, events = sequence }));
+            System.Drawing.Rectangle field=textProbe.RectangleToScreen(textProbe.ClientRectangle),button=clickProbe.RectangleToScreen(clickProbe.ClientRectangle);
+            File.WriteAllText(statePath, json.Serialize(new { observedUtc = DateTime.UtcNow.ToString("o"), processId = System.Diagnostics.Process.GetCurrentProcess().Id, foreground = GetForegroundWindow() == Handle, cursorX = cursor.X, cursorY = cursor.Y, clientLeft = client.Left, clientTop = client.Top, clientWidth = client.Width, clientHeight = client.Height, primaryWidth = primary.Width, primaryHeight = primary.Height, desktopLeft = desktop.Left, desktopTop = desktop.Top, desktopWidth = desktop.Width, desktopHeight = desktop.Height, events = sequence, probeText=textProbe.Text, selectionLength=textProbe.SelectionLength, clicks=clicks, fieldLeft=field.Left,fieldTop=field.Top,fieldWidth=field.Width,fieldHeight=field.Height,buttonLeft=button.Left,buttonTop=button.Top,buttonWidth=button.Width,buttonHeight=button.Height,keyboardLayout=InputLanguage.CurrentInputLanguage.Handle.ToInt64().ToString("x"),capsLock=Control.IsKeyLocked(Keys.CapsLock) }));
         }
         private bool IsOurDevice(IntPtr device)
         {

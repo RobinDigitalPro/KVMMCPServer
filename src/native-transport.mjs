@@ -25,7 +25,7 @@ export function secureInputDeadline(leaseDeadline, capturedAt, now = Date.now())
 
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
-  #captureWorker; #recordingListeners = new Set(); #inputResetEpoch = 0;
+  #captureWorker; #recordingListeners = new Set(); #inputResetEpoch = 0; #textContext;
   #securePrompt; #secureCapturedAt = 0; #inputDeadline; #secureInputPending = false; #completedSecureClick;
   constructor(executable, { dataRoot, onFault = () => {} } = {}) {
     if (typeof executable !== 'string' || !executable) throw new TypeError('native executable path required');
@@ -111,9 +111,11 @@ export class NativeTransport {
     return { ...metadata, frameId, data };
   }
   setInputDeadline(deadline) { this.#inputDeadline = deadline; }
+  async planText(options) { return (await this.#request('plan_text', undefined, false, options)).plan; }
+  setTextContext(context) { this.#textContext = context; }
   cancelPendingUacInput() { if (this.#secureInputPending) this.#child.kill(); }
   async releaseInput() { this.#securePrompt = undefined; this.#completedSecureClick = undefined; return this.#request('release'); }
-  async #request(op, report, secure = false) {
+  async #request(op, report, secure = false, fields = {}) {
     await this.#ready;
     if (this.#fatal) throw this.#fatal;
     const id = ++this.#id;
@@ -121,7 +123,7 @@ export class NativeTransport {
       const timeout = secure || (op === 'ping' && this.#metadata?.secureDesktopSupported) ? 15000 : 3000;
       const timer = setTimeout(() => this.#fail(new Error('native write timed out; kernel watchdog must release held input')), timeout);
       this.#pending.set(id, { resolve, reject, timer });
-      this.#child.stdin.write(JSON.stringify({ id, op, ...(report ? { report } : {}), ...(secure ? { promptId: this.#securePrompt, deadlineUtcMs: Math.floor(Math.min(this.#inputDeadline ?? 0, this.#secureCapturedAt + 30000)) } : {}) }) + '\n');
+      this.#child.stdin.write(JSON.stringify({ id, op, ...fields, ...(report ? { report } : {}), ...(op === 'send' && this.#textContext ? { textContext: this.#textContext } : {}), ...(secure ? { promptId: this.#securePrompt, deadlineUtcMs: Math.floor(Math.min(this.#inputDeadline ?? 0, this.#secureCapturedAt + 30000)) } : {}) }) + '\n');
     });
   }
   async send(report) {

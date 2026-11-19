@@ -8,6 +8,7 @@ import { absoluteReport, relativeReports, keyboardReport } from './reports.mjs';
 export class HidSession {
   #transport; #clock; #lease; #tail = Promise.resolve(); #absolute; #faulted = false; #operatorStopped = false;
   #keyboard = { modifiers: 0, keys: [] }; #keyboardEpoch = 0; #press;
+  #mouseButtons = 0; #mouseEpoch = 0;
   // Keep epoch-style timestamps while measuring leases monotonically, so a
   // Windows clock correction cannot extend a controller's permitted lifetime.
   constructor(transport, { clock = () => performance.timeOrigin + performance.now() } = {}) {
@@ -53,6 +54,7 @@ export class HidSession {
   }
   assertLease(token) { return this.#queue(() => this.#check(token)); }
   async #send(reports, signal) {
+    let acknowledgement;
     for (const report of reports) {
       if (this.#operatorStopped || signal?.aborted) {
         await this.#release();
@@ -62,18 +64,20 @@ export class HidSession {
         await this.#release();
         throw new Error('lease expired');
       }
-      try { await this.#transport.send(report); }
+      if (this.#press?.deadline && this.#clock() >= this.#press.deadline) throw new Error('Text batch duration limit reached; input released');
+      try { acknowledgement = await this.#transport.send(report); }
       catch (error) {
-        if (error.policyRefusal === true) { await this.#transport.releaseInput?.(); this.#keyboard = { modifiers: 0, keys: [] }; throw error; }
+        if (error.policyRefusal === true) { await this.#transport.releaseInput?.(); this.#keyboard = { modifiers: 0, keys: [] }; this.#mouseButtons = 0; throw error; }
         this.#faulted = true;
         // Attempt every neutral report even if one transport write fails.
         await this.#release().catch(() => {});
         throw error;
       }
     }
+    return acknowledgement;
   }
   moveRelative(token, options, { signal } = {}) {
-    return this.#queue(async () => { await this.#check(token); await this.#send(relativeReports(options), signal); });
+    return this.#queue(async () => { await this.#check(token); await this.#send(relativeReports(options), signal); this.#mouseButtons = options?.buttons ?? 0; this.#mouseEpoch = this.#transport.status?.().inputResetEpoch ?? 0; });
   }
   moveAbsolute(token, options, { signal } = {}) {
     return this.#queue(async () => {
@@ -82,6 +86,7 @@ export class HidSession {
       // Remember the intended location even if a successful write loses its ACK.
       this.#absolute = { x: options.x, y: options.y };
       await this.#send([report], signal);
+      this.#mouseButtons = options.buttons ?? 0; this.#mouseEpoch = this.#transport.status?.().inputResetEpoch ?? 0;
     });
   }
   keyboard(token, options, { signal } = {}) {
@@ -93,9 +98,12 @@ export class HidSession {
     this.#keyboard = { modifiers: report[1], keys: [...report.subarray(3)].filter(key => key !== 0) };
     this.#keyboardEpoch = this.#transport.status?.().inputResetEpoch ?? 0;
   }
-  #keyState(key, down) {
+  #syncKeyboard() {
     const epoch = this.#transport.status?.().inputResetEpoch ?? 0;
     if (epoch !== this.#keyboardEpoch) { this.#keyboardEpoch = epoch; this.#keyboard = { modifiers: 0, keys: [] }; }
+  }
+  #keyState(key, down) {
+    this.#syncKeyboard();
     if (!Number.isInteger(key) || !((key >= 4 && key <= 101) || (key >= 224 && key <= 231))) throw new RangeError('key must be HID usage 4..101 or modifier usage 224..231');
     const state = { modifiers: this.#keyboard.modifiers, keys: [...this.#keyboard.keys] };
     if (key >= 224) { const bit = 1 << (key - 224); state.modifiers = down ? state.modifiers | bit : state.modifiers & ~bit; }
@@ -110,6 +118,102 @@ export class HidSession {
     return this.#queue(async () => { await this.#check(token); await this.#setKeyboard(this.#keyState(key, false), signal); });
   }
   cancelPendingInput(token, reason = 'input cancelled') { if (this.#press?.token === token) this.#press.abort.abort(new Error(reason)); }
+  #requireTime(durationMs) { if (this.#lease.expiresAt - this.#clock() < durationMs + 50) throw new Error('Not enough lease time for durationMs and input release'); }
+  async #wait(token, durationMs, signal, epoch) {
+    const until = this.#clock() + durationMs;
+    while (this.#clock() < until) {
+      await delay(Math.min(25, Math.max(1, until - this.#clock())), undefined, { signal });
+      await this.#check(token);
+      if (this.#press?.deadline && this.#clock() >= this.#press.deadline) throw new Error('Text batch duration limit reached; input released');
+      if ((this.#transport.status?.().inputResetEpoch ?? 0) !== epoch) throw new Error('Desktop changed during input; input released');
+    }
+    signal?.throwIfAborted();
+  }
+  async #atomic(token, signal, action, maxMs) {
+    const press = { token, abort: new AbortController(), deadline: maxMs ? this.#clock() + maxMs : undefined }; this.#press = press;
+    const combined = signal ? AbortSignal.any([signal, press.abort.signal]) : press.abort.signal;
+    try { combined.throwIfAborted(); return await action(combined); }
+    catch (error) { if (error.policyRefusal !== true && this.#lease?.token === token) await this.#release().catch(() => {}); throw error; }
+    finally { if (this.#press === press) this.#press = undefined; }
+  }
+  keyChord(token, { keys = [], modifiers = 0, durationMs = 100 }, { signal } = {}) {
+    return this.#queue(async () => {
+      await this.#check(token);
+      if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 10000) throw new RangeError('durationMs must be 1..10000');
+      const chord = keyboardReport({ keys, modifiers });
+      if (!keys.length && !modifiers) throw new Error('A chord must contain a key or modifier');
+      // Synchronize cached keyboard state after native desktop neutralization.
+      this.#syncKeyboard();
+      const previous = this.#keyboard, epoch = this.#keyboardEpoch;
+      const pressed = { keys: [...new Set([...previous.keys, ...keys])], modifiers: previous.modifiers | chord[1] };
+      keyboardReport(pressed);
+      if (keys.some(key => previous.keys.includes(key)) || (previous.modifiers & modifiers)) throw new Error('Chord keys must not already be held');
+      this.#requireTime(durationMs);
+      return this.#atomic(token, signal, async combined => {
+        const started = performance.now();
+        await this.#setKeyboard(pressed, combined); await this.#wait(token, durationMs, combined, epoch); await this.#setKeyboard(previous, combined);
+        return { keys, modifiers, durationMs, elapsedMs: Math.round((performance.now() - started) * 100) / 100 };
+      });
+    });
+  }
+  click(token, { button = 'left', x, y, durationMs = 80 }, { signal } = {}) {
+    return this.#queue(async () => {
+      await this.#check(token);
+      if (!['left', 'right', 'middle'].includes(button)) throw new RangeError('button must be left, right or middle');
+      if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 1000) throw new RangeError('durationMs must be 1..1000');
+      if ((x === undefined) !== (y === undefined)) throw new Error('Provide both x and y, or neither');
+      const epoch = this.#transport.status?.().inputResetEpoch ?? 0;
+      if (epoch !== this.#mouseEpoch) { this.#mouseButtons = 0; this.#mouseEpoch = epoch; }
+      if (this.#mouseButtons) throw new Error('Release held mouse buttons before clicking');
+      const buttons = { left: 1, right: 2, middle: 4 }[button];
+      const reports = x === undefined ? [relativeReports({ buttons })[0], relativeReports()[0]] : [absoluteReport({ x, y, buttons }), absoluteReport({ x, y })];
+      this.#requireTime(durationMs);
+      if (x !== undefined) this.#absolute = { x, y };
+      return this.#atomic(token, signal, async combined => {
+        const started = performance.now(), acknowledgement = await this.#send([reports[0]], combined);
+        this.#mouseButtons = buttons;
+        const secureConsent = acknowledgement?.secureDelegated === true;
+        if (!secureConsent) await this.#wait(token, durationMs, combined, epoch);
+        await this.#send([reports[1]], combined); this.#mouseButtons = 0;
+        return { button, durationMs, elapsedMs: Math.round((performance.now() - started) * 100) / 100, secureConsent, durationControlledByService: secureConsent };
+      });
+    });
+  }
+  typeText(token, { text, layout = 'active', intervalMs = 10 }, { signal } = {}) {
+    return this.#queue(async () => {
+      await this.#check(token);
+      if (typeof text !== 'string' || !text.length || text.length > 1024) throw new RangeError('text must contain 1..1024 UTF-16 units');
+      if (!Number.isInteger(intervalMs) || intervalMs < 0 || intervalMs > 100) throw new RangeError('intervalMs must be 0..100');
+      if (typeof this.#transport.planText !== 'function') throw new Error('Windows text planner is unavailable in this mode');
+      this.#syncKeyboard();
+      if (this.#keyboard.keys.length || this.#keyboard.modifiers) throw new Error('Release held keyboard keys before typing text');
+      return this.#atomic(token, signal, async combined => {
+        const started = performance.now(), plan = await this.#transport.planText({ text, layout });
+        combined.throwIfAborted();
+        if (!Array.isArray(plan?.strokes) || !plan.strokes.length || plan.strokes.length > 2048 || !plan.context) throw new Error('Invalid Windows text plan');
+        for (const stroke of plan.strokes) {
+          if (!Number.isInteger(stroke.key) || stroke.key < 4 || stroke.key > 101 || ![0, 2, 64, 66].includes(stroke.modifiers)) throw new Error('Unsafe text stroke');
+          keyboardReport({ keys: [stroke.key], modifiers: stroke.modifiers });
+        }
+        const requestedMs = plan.strokes.length * (10 + intervalMs);
+        if (requestedMs > 30000) throw new Error('Text batch exceeds 30 seconds; use smaller batches');
+        this.#requireTime(requestedMs);
+        const epoch = this.#transport.status?.().inputResetEpoch ?? 0;
+        let sent = 0;
+        this.#transport.setTextContext?.(plan.context);
+        try {
+          for (const stroke of plan.strokes) {
+            await this.#setKeyboard({ keys: [stroke.key], modifiers: stroke.modifiers }, combined);
+            await this.#wait(token, 10, combined, epoch);
+            await this.#setKeyboard({}, combined); sent++;
+            await this.#wait(token, intervalMs, combined, epoch);
+          }
+          return { characters: plan.characters, strokes: sent, mappingLayout: plan.mappingLayout, intervalMs, elapsedMs: Math.round((performance.now() - started) * 100) / 100 };
+        } catch (error) { if (sent) error.message = `Text input interrupted after ${sent} strokes: ${error.message}`; throw error; }
+        finally { this.#transport.setTextContext?.(undefined); }
+      }, 30000);
+    });
+  }
   keyPress(token, { key, durationMs = 100 }, { signal } = {}) {
     return this.#queue(async () => {
       await this.#check(token);
@@ -139,6 +243,7 @@ export class HidSession {
   async #release() {
     this.#lease = undefined;
     this.#keyboard = { modifiers: 0, keys: [] };
+    this.#mouseButtons = 0;
     if (typeof this.#transport.releaseInput === 'function') {
       try { await this.#transport.releaseInput(); return; } catch (error) { this.#faulted = true; throw error; }
     }

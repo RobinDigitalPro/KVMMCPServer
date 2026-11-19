@@ -7,7 +7,7 @@ and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.6.0** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.7.0** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
@@ -22,11 +22,17 @@ one-shot consent clicks through the capture/mouse tools. Approval is restricted
 to administrator-staged executable paths and SHA-256 hashes. See
 [secure desktop setup and limits](docs/SECURE_DESKTOP.md).
 
-The fourteen tools also include `hid_key_down`, `hid_key_up` and
+The seventeen tools also include `hid_key_down`, `hid_key_up` and
 `hid_key_press(durationMs)`. Physical key usages include modifiers (224..231).
 Timed presses run locally for 1..10000 ms, preserve other held keys and release
 on cancellation, disconnect, desktop transition or lease expiry. See
 [keyboard examples](docs/AGENT_USAGE.md#individual-keys-and-timed-presses).
+
+`hid_type_text` plans physical keystrokes through the Windows keyboard layout,
+including Belgian (Period), AltGr and supported dead-key accents. It preflights
+the entire string and checks the foreground window/layout while typing.
+`hid_key_chord` performs a locally timed chord; `hid_click` presses/releases a
+mouse button in one call. See [text, chords and clicks](docs/AGENT_USAGE.md#text-chords-and-clicks).
 
 ## Architecture
 
@@ -58,7 +64,7 @@ No ordinary test injects desktop input. Operational data belongs outside source:
 .\scripts\Test-Local.ps1 -DataRoot D:\AgentData\desktop-hid -Function all
 ```
 
-The short suite has 55 JavaScript tests and 18 native HID checks. Stop the live
+The short suite has 67 JavaScript tests and 19 native HID checks. Stop the live
 controller before rebuilding its executable. The driver has a separate portable
 C contract (12 checks), package-validation tests (four cases), and explicit live
 acceptance scripts. Live scripts are never included in the ordinary suite.

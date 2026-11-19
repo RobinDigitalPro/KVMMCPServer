@@ -18,7 +18,7 @@ For Codex registration, run the supplied installation script as the normal user:
 .\scripts\Install-McpConnection.ps1 -NodePath C:\Tools\node.exe -NativeExecutable D:\AgentData\desktop-hid\native\HidTransport.exe -DataRoot D:\AgentData\desktop-hid
 ```
 
-It registers fourteen tools and leaves the client's approval policy unchanged.
+It registers seventeen tools and leaves the client's approval policy unchanged.
 Reload the client MCP connection if its catalog has not refreshed. A terminal
 launch alone does not attach tools to a chat.
 
@@ -67,7 +67,8 @@ Buttons are the complete held state: left=1, right=2, middle=4. Click with 1 the
 0 in the same mouse mode; drag with 1 during movement, then release. Release
 before switching relative/absolute collections. Keyboard usages are physical:
 usage 4 is Q on the tested Belgian AZERTY layout. Left Ctrl/Shift/Alt/GUI bits
-are 1/2/4/8; right are 16/32/64/128. This version has no Unicode typing tool.
+are 1/2/4/8; right are 16/32/64/128. `hid_type_text` converts supported text to
+physical strokes instead of sending Unicode packets or using the clipboard.
 
 ## Individual keys and timed presses
 
@@ -95,6 +96,59 @@ state after success. Pressing a key already held is refused. Cancellation,
 owner disconnect, explicit lease release, emergency stop or lease expiry release
 all input. A detected desktop transition cancels a timed hold and discards the
 cached modifiers. These tools do not enter keys on UAC/credential desktops.
+
+## Text, chords and clicks
+
+```json
+{"name":"hid_type_text","arguments":{"token":"LEASE_TOKEN","text":"AZERTY 123 @€ éè êë","layout":"Belgian (Period)"}}
+{"name":"hid_key_chord","arguments":{"token":"LEASE_TOKEN","modifiers":5,"durationMs":100}}
+{"name":"hid_click","arguments":{"token":"LEASE_TOKEN","button":"left","x":6147,"y":6408,"durationMs":80}}
+```
+
+The chord example presses left Ctrl+Alt together (modifier mask 1|4), then
+releases them locally. Add up to six distinct physical `keys` for a shortcut.
+Previously held keys are preserved; requested chord members must be released
+before invoking it. Chord duration defaults to 100 ms and is limited to 10000.
+
+Click accepts `left`, `right` or `middle`. Supply both `x` and `y` for absolute
+HID coordinates, or omit both to click at the current cursor. The default hold
+is 80 ms; the range is 1..1000. Release previously held mouse buttons first.
+During UAC, only an absolute left click on a recognized consent control is
+accepted; the existing service owns that complete click's fixed timing.
+
+Before text input, inspect a fresh screenshot and focus the intended field.
+Release held keyboard keys. `layout="active"` uses the foreground Windows
+window's layout. `Belgian (Period)` and `00000813` select the same already-loaded
+Windows layout for mapping; this never switches the target or host layout.
+Other loaded base layout IDs are accepted; unsupported variants/IMEs fail.
+For a guest/remote console, specify its actual keyboard layout explicitly:
+the host can only observe the console application's host layout.
+Caps Lock used for mapping is also the host state; the guest's lock state must
+match it. No guest layout or composition state is read or changed automatically.
+
+Strings are limited to 1024 UTF-16 units and normalized to NFC. CRLF/CR become
+Enter; tabs produce physical Tab. The planner supports direct layout mappings,
+AltGr, literal accent keys and available Latin dead-key combinations. A character
+that cannot be represented (including supplementary Unicode/emoji) rejects the
+whole string before any typing. There is no clipboard or Unicode-injection fallback.
+An input method's composition state and the selected field remain the caller's
+responsibility. Partial text is not undone or silently retried after interruption.
+
+Each physical key is held for 10 ms; `intervalMs` adds 0..100 ms between strokes
+(default 10). Batches above 30 seconds of requested timing are rejected and the
+lease must cover the batch. Actual text execution is also bounded locally to
+30 seconds, so slower input can stop partway through. Windows scheduling and
+transport add overhead; use short batches and verify the resulting text.
+Window, host layout or Caps Lock changes stop text before the next stroke.
+Cancellation, disconnect and lease expiry release all input. These keyboard
+conveniences operate on the ordinary desktop; no credential entry is provided.
+
+Layout translation uses the documented Windows
+[ToUnicodeEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-tounicodeex)
+non-mutating mode and
+[MapVirtualKeyEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-mapvirtualkeyexw).
+[Windows layout identifiers](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-language-pack-default-values?view=windows-11)
+include Belgian (Period) as `00000813`.
 
 ## Intervention, cancellation and disconnect
 

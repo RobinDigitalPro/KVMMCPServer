@@ -29,9 +29,11 @@ export async function startBroker({ dataRoot, simulated = false, executable, tra
   const close = () => closing ??= (async () => {
     for (const socket of sockets) socket.destroy();
     if (server) await new Promise(resolve => server.close(resolve));
-    await controller?.close();
-    if ((await readJson(endpointPath))?.instance === instance) await fs.rm(endpointPath, { force: true });
-    if ((await readJson(lockPath))?.instance === instance) await fs.rm(lockPath, { force: true });
+    try { await controller?.close(); }
+    finally {
+      if ((await readJson(endpointPath))?.instance === instance) await fs.rm(endpointPath, { force: true });
+      if ((await readJson(lockPath))?.instance === instance) await fs.rm(lockPath, { force: true });
+    }
   })();
   try {
     controller = await DesktopController.create({ simulated, executable, dataRoot, store, transport });

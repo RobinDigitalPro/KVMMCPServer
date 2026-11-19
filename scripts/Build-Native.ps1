@@ -9,7 +9,7 @@ $taskSourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ($taskOutput.StartsWith($taskSourceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or $taskOutput -eq $taskSourceRoot) { throw 'Keep build data outside the source/setup directory' }
 [IO.Directory]::CreateDirectory($taskOutput) | Out-Null
 $taskExe = Join-Path $taskOutput 'HidTransport.exe'
-& $taskCompiler /nologo /target:exe /platform:x64 /optimize+ /warnaserror+ /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.ServiceProcess.dll "/out:$taskExe" (Join-Path $taskSourceRoot 'native\HidTransport.cs') (Join-Path $taskSourceRoot 'native\SecureDesktopClient.cs')
+& $taskCompiler /nologo /target:exe /platform:x64 /optimize+ /warnaserror+ /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.ServiceProcess.dll "/out:$taskExe" (Join-Path $taskSourceRoot 'native\HidTransport.cs') (Join-Path $taskSourceRoot 'native\SecureDesktopClient.cs') (Join-Path $taskSourceRoot 'native\KeyboardText.cs')
 if ($LASTEXITCODE -ne 0) { throw "Native build failed: $LASTEXITCODE" }
 & $taskExe self-test
 if ($LASTEXITCODE -ne 0) { throw 'Native wire tests failed' }

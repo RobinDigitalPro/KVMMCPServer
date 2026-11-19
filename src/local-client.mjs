@@ -63,7 +63,7 @@ export class LocalClient {
       };
       const timer = setTimeout(() => {
         this.#socket.destroy(new Error('Local controller request timed out'));
-      }, method === 'call' && params.name === 'hid_key_press' ? 15000 : 10000);
+      }, method === 'call' && params.name === 'hid_type_text' ? 45000 : method === 'call' && ['hid_key_press', 'hid_key_chord'].includes(params.name) ? 15000 : 10000);
       const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
       this.#pending.set(id, { resolve, reject, cleanup });
       signal?.addEventListener('abort', cancel, { once: true });

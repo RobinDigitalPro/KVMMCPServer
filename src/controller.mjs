@@ -14,6 +14,7 @@ export class DesktopController {
   static async create({ simulated = false, executable, dataRoot, store, transport } = {}) {
     const stopped = await store?.stopState() ?? { stopped: false };
     const controller = new DesktopController({ simulated, store, stopped });
+    try {
     if (!stopped.stopped) {
       controller.#transport = transport ?? (simulated ? { send: async () => { controller.#reports++; } } : new NativeTransport(executable, { dataRoot, onFault: error => { void controller.stop(error.message).catch(() => {}); } }));
       controller.#session = new HidSession(controller.#transport);
@@ -41,6 +42,7 @@ export class DesktopController {
     }, 1000);
     await controller.publish({ event: 'controller_started' });
     return controller;
+    } catch (error) { await controller.close().catch(() => {}); throw error; }
   }
   attach(label = 'local-agent') { const id = randomUUID(); this.#clients.set(id, String(label).slice(0, 100)); return id; }
   async detach(client) {
@@ -59,7 +61,7 @@ export class DesktopController {
   status() {
     const native = this.#transport?.status?.();
     const control = this.#session?.status() ?? { owner: null, leaseRemainingMs: 0, operatorStopped: this.#stopped.stopped, faulted: false };
-    return { version: '0.6.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
+    return { version: '0.7.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
       control: { ...control, operatorStopped: this.#stopped.stopped || (!this.#closing && control.operatorStopped), jobId: control.owner ? this.#owner?.jobId ?? null : null, clientId: control.owner ? this.#owner?.client ?? null : null },
       operatorStop: this.#stopped, clients: this.#clients.size, activeCaptures: this.#captures.size, lastAction: this.#lastAction ?? null,
       screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
@@ -155,7 +157,7 @@ export class DesktopController {
         await this.#session.release(args.token); this.#owner = undefined;
       } else {
         const { token, ...options } = args;
-        const method = { hid_mouse_relative: 'moveRelative', hid_mouse_absolute: 'moveAbsolute', hid_keyboard: 'keyboard', hid_key_down: 'keyDown', hid_key_up: 'keyUp', hid_key_press: 'keyPress' }[name];
+        const method = { hid_mouse_relative: 'moveRelative', hid_mouse_absolute: 'moveAbsolute', hid_keyboard: 'keyboard', hid_key_down: 'keyDown', hid_key_up: 'keyUp', hid_key_press: 'keyPress', hid_key_chord: 'keyChord', hid_type_text: 'typeText', hid_click: 'click' }[name];
         const details = await this.#session[method](token, options, { signal });
         if (details) response = result({ ok: true, simulated: this.#simulated, inputSent: !this.#simulated, ...details });
       }

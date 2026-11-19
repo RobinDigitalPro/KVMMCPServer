@@ -287,8 +287,8 @@ namespace OpenDesktopHid
                                 string line;
                                 while ((line = Console.ReadLine()) != null)
                                 {
-                                    if (line.Length > 2048) throw new ArgumentException("Request too large");
-                                    Dictionary<string, object> req = new JavaScriptSerializer { MaxJsonLength = 2048 }.Deserialize<Dictionary<string, object>>(line);
+                                    if (line.Length > 8192) throw new ArgumentException("Request too large");
+                                    Dictionary<string, object> req = new JavaScriptSerializer { MaxJsonLength = 8192 }.Deserialize<Dictionary<string, object>>(line);
                                     object id; if (!req.TryGetValue("id", out id)) throw new ArgumentException("Request id required");
                                     lock (gate)
                                     {
@@ -300,12 +300,17 @@ namespace OpenDesktopHid
                                             if(secure&&!paused){device.Release();released=true;mutex.ReleaseMutex();owned=false;paused=true;Emit(new{type="desktop_transition",inputPaused=true,desktop="Winlogon"});}
                                             if(!secure&&paused){try{owned=mutex.WaitOne(0);}catch(AbandonedMutexException){owned=true;}if(!owned)throw new SecurePolicyException("Secure desktop is still controlled");paused=false;device.Release();released=true;Emit(new{type="desktop_transition",inputPaused=false,desktop="Default"});}
                                             if (op == "ping") {if(!paused)device.Heartbeat();heartbeat.Restart();}
+                                            else if(op=="plan_text") {
+                                                if(paused)throw new SecurePolicyException("Text input is only available on the ordinary desktop");
+                                                var plan=KeyboardText.Plan(req.ContainsKey("text")?req["text"] as string:null,req.ContainsKey("layout")?req["layout"] as string:"active");
+                                                heartbeat.Restart();Emit(new{id=id,ok=true,plan=plan});continue;
+                                            }
                                             else if(op=="send") {
                                                 byte[] report=Wire.Decode(req["report"] as string);heartbeat.Restart();
                                                 if(paused){
                                                     bool neutral=(report[0]==7&&report.Skip(1).All(value=>value==0)) || (report[0]==4&&report.Skip(1).All(value=>value==0));
                                                     if(!neutral){object challenge,deadline;req.TryGetValue("promptId",out challenge);req.TryGetValue("deadlineUtcMs",out deadline);if(!(challenge is string))throw new SecurePolicyException("Capture a fresh UAC screenshot before input");SecureDesktopClient.Call(new{op="input",promptId=(string)challenge,report=req["report"] as string,deadlineUtcMs=deadline});}
-                                                }else{DesktopSession.RequireConsole();if(req.ContainsKey("promptId")){if((report[0]==3||report[0]==4)&&report[1]==0&&report[report.Length-1]==0){device.Release();released=true;}else if(report[0]==7&&report.Skip(1).All(value=>value==0)){device.Release();released=true;}else throw new SecurePolicyException("UAC closed; capture a fresh ordinary desktop before input");}else{device.Send(report);released=false;}}
+                                                }else{DesktopSession.RequireConsole();if(req.ContainsKey("promptId")){if((report[0]==3||report[0]==4)&&report[1]==0&&report[report.Length-1]==0){device.Release();released=true;}else if(report[0]==7&&report.Skip(1).All(value=>value==0)){device.Release();released=true;}else throw new SecurePolicyException("UAC closed; capture a fresh ordinary desktop before input");}else{KeyboardText.RequireContext(req);device.Send(report);released=false;}}
                                                 heartbeat.Restart();
                                             }
                                             else if(op=="release"){if(!paused)device.Release();released=true;}
@@ -326,6 +331,7 @@ namespace OpenDesktopHid
         private static int SelfTest()
         {
             int passed = 0;
+            KeyboardText.SelfTest();passed++;
             if (Marshal.SizeOf(typeof(Native.Caps)) != 64 || Marshal.SizeOf(typeof(Native.Attributes)) != 12 || Marshal.SizeOf(typeof(Native.InterfaceData)) != (IntPtr.Size == 8 ? 32 : 28)) throw new Exception("Windows interop structure size mismatch");
             passed++;
             if (!DesktopSession.MatchesConsole(1, 1) || DesktopSession.MatchesConsole(1, 2) || DesktopSession.MatchesConsole(1, uint.MaxValue)) throw new Exception("Console session guard failed");
@@ -351,7 +357,13 @@ namespace OpenDesktopHid
         {
             try
             {
+                Console.InputEncoding=new UTF8Encoding(false,true);Console.OutputEncoding=new UTF8Encoding(false);
                 if (args.Length == 1 && args[0] == "self-test") return SelfTest();
+                if(args.Length==1&&args[0]=="plan-text"){
+                    string input=Console.ReadLine();if(input==null||input.Length>8192)throw new ArgumentException("Expected bounded text/layout JSON on stdin");
+                    var request=new JavaScriptSerializer{MaxJsonLength=8192}.Deserialize<Dictionary<string,object>>(input);
+                    Emit(new{ok=true,inputSent=false,plan=KeyboardText.Plan(request["text"] as string,request.ContainsKey("layout")?request["layout"] as string:"active")});return 0;
+                }
                 if (args.Length == 1 && args[0] == "probe")
                 {
                     List<Candidate> candidates = Device.Find();
