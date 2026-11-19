@@ -237,6 +237,7 @@ namespace OpenDesktopHid {
             var paths=new List<string>();
             foreach(AutomationElement item in elements){if(item.Current.IsPassword)continue;string id=item.Current.AutomationId;
                 bool field=new[]{"ProgramLocation","ProgramLocationText","ProgramPath","CommandLine","CommandLineText"}.Any(value=>String.Equals(value,id,StringComparison.OrdinalIgnoreCase));
+                if(item.Current.ControlType==ControlType.Text&&SecureConsentProfile.ExpandedLocation(id,item.Current.Name))field=true;
                 var label=item.Current.LabeledBy;
                 if(label!=null&&!String.IsNullOrEmpty(label.Current.AutomationId)&&label.Current.ControlType==ControlType.Text&&new[]{"Program location:","Programmalocatie:","Program path:","Programmapad:"}.Contains(label.Current.Name.Trim()))field=true;
                 if(!field)continue;string text=item.Current.Name;if(!String.IsNullOrEmpty(text)&&text.Length<=2048)paths.Add(text);object raw;if(item.TryGetCurrentPattern(ValuePattern.Pattern,out raw)){text=((ValuePattern)raw).Current.Value;if(!String.IsNullOrEmpty(text)&&text.Length<=2048)paths.Add(text);}
@@ -260,7 +261,7 @@ namespace OpenDesktopHid {
         }
         private static Dictionary<string,object> Respond(Dictionary<string,object> request) {
             string challenge=SecureProtocol.Text(request,"promptId"),decision=SecureProtocol.Text(request,"decision"),applicationId=null;
-            if(challenge!=promptId||DateTime.UtcNow>promptExpires)throw new IOException("Stale or unknown UAC prompt; inspect again");
+            if(!SecureConsentProfile.SamePrompt(challenge,promptId)||DateTime.UtcNow>promptExpires)throw new IOException("Stale or unknown UAC prompt; inspect again");
             request["stopEpoch"]=promptEpoch;
             IntPtr window;using(var consent=Consent(out window)) {
                 if(promptPid!=(uint)consent.Id||promptTicks!=consent.StartTime.ToUniversalTime().Ticks||window!=promptWindow)throw new IOException("UAC prompt changed");
@@ -274,12 +275,12 @@ namespace OpenDesktopHid {
                     if(requested[0]!=3)throw new IOException("Use an absolute mouse click for UAC consent");
                     requestedX=(requested[2]+256*requested[3])*(Native.GetSystemMetrics(0)-1)/32767.0;requestedY=(requested[4]+256*requested[5])*(Native.GetSystemMetrics(1)-1)/32767.0;
                     AutomationElement target=null;
-                    foreach(AutomationElement item in elements){var bounds=item.Current.BoundingRectangle;if(item.Current.ControlType==ControlType.Button&&!item.Current.IsOffscreen&&item.Current.IsEnabled&&bounds.Contains(requestedX,requestedY)){target=item;break;}}
+                    foreach(AutomationElement item in elements){var bounds=item.Current.BoundingRectangle;if(IsAction(item)&&!item.Current.IsOffscreen&&item.Current.IsEnabled&&bounds.Contains(requestedX,requestedY)){target=item;break;}}
                     if(target==null)throw new IOException("Click is outside a recognized UAC button");
                     string label=target.Current.Name;
                     if(new[]{"Yes","Ja"}.Contains(label))decision="approve";
                     else if(new[]{"No","Nee","Cancel","Annuleren"}.Contains(label))decision="deny";
-                    else if(new[]{"Show more details","Meer details weergeven","Show fewer details","Minder details weergeven"}.Contains(label))decision="details";
+                    else if(SecureConsentProfile.DetailsLabels.Contains(label))decision="details";
                     else throw new IOException("This UAC control cannot be operated");
                     if(decision=="approve"){
                         object rawApps;request.TryGetValue("applications",out rawApps);
@@ -298,8 +299,8 @@ namespace OpenDesktopHid {
                     if(!locations.Any(location=>MatchesPath(location,path)))throw new IOException("UAC executable location field is unavailable or does not match the approved application");
                 }
                 AutomationElement button=null;
-                string[] accepted=decision=="approve"?new[]{"Yes","Ja"}:decision=="details"?new[]{"Show more details","Meer details weergeven","Show fewer details","Minder details weergeven"}:new[]{"No","Nee","Cancel","Annuleren"};
-                foreach(AutomationElement item in elements)if(item.Current.ControlType==ControlType.Button&&!item.Current.IsOffscreen&&item.Current.IsEnabled&&accepted.Contains(item.Current.Name)){button=item;break;}
+                string[] accepted=decision=="approve"?new[]{"Yes","Ja"}:decision=="details"?SecureConsentProfile.DetailsLabels:new[]{"No","Nee","Cancel","Annuleren"};
+                foreach(AutomationElement item in elements)if(IsAction(item)&&!item.Current.IsOffscreen&&item.Current.IsEnabled&&accepted.Contains(item.Current.Name)){button=item;break;}
                 if(button==null)throw new IOException("Identified consent button is unavailable");
                 var rectangle=button.Current.BoundingRectangle;int width=Native.GetSystemMetrics(0),height=Native.GetSystemMetrics(1);double x=rectangle.X+rectangle.Width/2,y=rectangle.Y+rectangle.Height/2;
                 if(width<2||height<2||x<0||y<0||x>=width||y>=height)throw new IOException("Consent button is outside the primary monitor");
@@ -316,6 +317,7 @@ namespace OpenDesktopHid {
                 return new Dictionary<string,object>{{"ok",true},{"decision",decision},{"applicationId",applicationId},{"consentPid",consent.Id},{"inputSent",true},{"backend","vhf-hid"}};
             }
         }
+        private static bool IsAction(AutomationElement item) {return item.Current.ControlType==ControlType.Button||(item.Current.ControlType==ControlType.Hyperlink&&item.Current.AutomationId=="ShowHideDetails"&&SecureConsentProfile.DetailsLabels.Contains(item.Current.Name));}
         private static void InputAuthority(Dictionary<string,object> request) {
             long deadline=Convert.ToInt64(request["deadlineUtcMs"]),now=(DateTime.UtcNow.Ticks-621355968000000000L)/10000;
             if(now>=deadline)throw new IOException("Input authorization expired");
@@ -354,6 +356,12 @@ namespace OpenDesktopHid {
             }
         }
     }
+    internal static class SecureConsentProfile {
+        internal static readonly string[] DetailsLabels={"Show more details","Meer details weergeven","Show fewer details","Minder details weergeven","Hide details","Details verbergen"};
+        internal static bool SamePrompt(string first,string second){Guid a,b;return Guid.TryParse(first,out a)&&Guid.TryParse(second,out b)&&a!=Guid.Empty&&a==b;}
+        // Observed Windows 11 consent.exe field, never ProgramName/publisher text.
+        internal static bool ExpandedLocation(string id,string name){return id=="ExpandedTextLine"&&name!=null&&new[]{"Program location:","Programmalocatie:"}.Any(prefix=>name.StartsWith(prefix,StringComparison.Ordinal));}
+    }
     internal static class SecureDesktopProgram {
         private static int Main(string[] args) {
             try {
@@ -363,6 +371,8 @@ namespace OpenDesktopHid {
                 if(args.Length==1&&args[0]=="inspect"){Console.WriteLine(SecureProtocol.Json.Serialize(SecureDesktopClient.Call(new{op="inspect"})));return 0;}
                 if(args.Length==1&&args[0]=="frame"){using(var pipe=SecureDesktopClient.Connect()){SecureProtocol.WriteJson(pipe,new{op="frame",includeCursor=true},3000);byte[] header=SecureProtocol.Read(pipe,64,5000);int length=BitConverter.ToInt32(header,32);if(BitConverter.ToInt32(header,0)!=0x31464355||BitConverter.ToInt32(header,8)!=0||length<1||length>SecureProtocol.MaxPixels)throw new IOException("Frame unavailable");var output=Console.OpenStandardOutput();SecureProtocol.Write(output,header,5000);SecureProtocol.Write(output,SecureProtocol.Read(pipe,length,5000),5000);}return 0;}
                 if(args.Length==1&&args[0]=="self-test"){
+                    if(!SecureConsentProfile.SamePrompt("5CD3AA2D-A453-4DCB-8934-141C34D73247","5cd3aa2d-a453-4dcb-8934-141c34d73247")||SecureConsentProfile.SamePrompt(null,null)||SecureConsentProfile.SamePrompt(Guid.Empty.ToString(),Guid.Empty.ToString())||SecureConsentProfile.SamePrompt(Guid.NewGuid().ToString(),Guid.NewGuid().ToString()))throw new Exception("Prompt identity normalization failed");
+                    if(!SecureConsentProfile.ExpandedLocation("ExpandedTextLine","Program location: \"C:\\protected.exe\"")||SecureConsentProfile.ExpandedLocation("ProgramName","Program location: \"C:\\protected.exe\"")||SecureConsentProfile.ExpandedLocation("ExpandedTextLine","Untrusted display name"))throw new Exception("Consent location profile failed");
                     if(SecureProtocol.MaxPixels!=67108864||SecureProtocol.Text(new Dictionary<string,object>{{"a","b"}},"a")!="b")throw new Exception("Protocol constants");
                     if(Marshal.SizeOf(typeof(SecureNative.TokenPrivilege))!=16||Marshal.SizeOf(typeof(SecureNative.StartupEx))!=112||Marshal.SizeOf(typeof(SecureNative.ExtendedLimits))!=144)throw new Exception("x64 Windows ABI mismatch");
                     var settings=SecureProtocol.Json.Deserialize<SecureSettings>("{\"operatorSid\":\"S-1-5-21-1-2-3-1000\",\"applications\":[{\"id\":\"probe\",\"path\":\"C:\\\\Program Files\\\\test.exe\",\"sha256\":\"abc\"}]}");if(settings.applications.Length!=1||settings.applications[0].id!="probe")throw new Exception("Configuration deserialization failed");

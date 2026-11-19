@@ -43,8 +43,12 @@ and permissions to administrators/SYSTEM with operator read/execute, creates a
 noninteractive automatic service and starts it. No UAC policy, desktop ACL,
 certificate trust or third-party driver setting is changed. Installation fails
 if a service/target folder already exists; it never silently replaces a live
-privileged binary. For an update, stop the controller, use the removal script,
-review/retain the protected files, then prepare a reviewed replacement install.
+privileged binary. For a reviewed service update, stop every HID controller and
+run `scripts/Update-SecureDesktop.ps1` as administrator with `-BuildDirectory`,
+`-ExpectedInstalledSha256`, `-PackageManifestSha256` and
+`-ConfirmControllerStopped`. It pins both the existing binary and package,
+backs up the protected executable/receipt and restores them if activation fails.
+Approved applications, the probe, service registration and UAC policy remain.
 
 Deploy both newly built `HidTransport.exe` and `ScreenCapture.exe` plus 0.5.0
 user-mode source. Restart the normal controller after service installation or
@@ -106,6 +110,11 @@ details hide the requested executable path, other UI languages, multi-monitor
 consent dialogs and credential prompts need separate validation; do not broaden
 matching rules to force approval. This is an executable permission, not a
 promise that every possible argument of an application is harmless.
+
+The Windows 11 consent profile also recognizes the actual `ExpandedTextLine`
+location text and the `ShowHideDetails` hyperlink. It requires the location
+prefix and does not search the program name or publisher for a matching path.
+Prompt GUIDs compare by value, including screenshots emitted in uppercase.
 
 ## Recordings and operator stop
 
