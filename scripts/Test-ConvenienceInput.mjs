@@ -18,7 +18,7 @@ if (path.resolve(root).toLowerCase().startsWith(source.toLowerCase() + path.sep)
 await fs.mkdir(root, { recursive: true });
 const log = path.join(root, 'receiver-events.jsonl');
 const child = spawn(observer, [log], { windowsHide: false, stdio: 'ignore' });
-const client = new Client({ name: 'convenience-input-acceptance', version: '0.7.0' });
+const client = new Client({ name: 'convenience-input-acceptance', version: '0.7.1' });
 const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(source, 'src/mcp.mjs'), '--live', hid, '--data-root', root, '--agent', 'input-acceptance'] });
 const input = createInterface({ input: process.stdin });
 const command = new Promise(resolve => input.once('line', resolve));
@@ -63,7 +63,7 @@ try {
   }
   let current = await foreground(); originalCaps = current.capsLock;
   assert.equal(current.keyboardLayout.slice(-8), '8130813', 'Set Belgian (Period) for this receiver before this explicit layout test');
-  const sample = 'AaZzQqWw 0123456789 @€\\/|[]{};:!? éèçà êëôûï ^~\nTab:\tOK';
+  const sample = 'MCP\nAaZzQqWw 0123456789 @€\\/|[]{};:!? éèçà êëôûï ^~\nTab:\tOK';
   receipt.tests.push({ op: 'hid_type_text', result: await call('hid_type_text', { token, text: sample, layout: 'Belgian (Period)' }) });
   await delay(150); current = await foreground();
   assert.equal(current.probeText.replaceAll('\r\n', '\n'), sample);

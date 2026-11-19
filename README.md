@@ -7,7 +7,7 @@ and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.7.0** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.7.1** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid

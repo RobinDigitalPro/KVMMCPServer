@@ -77,6 +77,10 @@ held keys/modifiers. They compose with `hid_keyboard`, which still replaces the
 complete keyboard state. Each tool takes `key`: physical HID usage 4..101, or
 modifier usage 224..231 (left Ctrl/Shift/Alt/GUI, then right Ctrl/Shift/Alt/GUI).
 
+Held printable keys can auto-repeat while another MCP call is in flight.
+Use `hid_type_text` for text and `hid_key_press` for individual taps; reserve
+`hid_keyboard` and down/up for intentionally held input.
+
 ```json
 {"name":"hid_key_down","arguments":{"token":"LEASE_TOKEN","key":224}}
 {"name":"hid_key_press","arguments":{"token":"LEASE_TOKEN","key":4,"durationMs":250}}

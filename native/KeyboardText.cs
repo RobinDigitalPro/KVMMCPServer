@@ -16,13 +16,14 @@ namespace OpenDesktopHid {
         [DllImport("user32.dll")] private static extern IntPtr GetKeyboardLayout(uint thread);
         [DllImport("user32.dll")] private static extern int GetKeyboardLayoutList(int count,[Out] IntPtr[] layouts);
         [DllImport("user32.dll")] private static extern short GetKeyState(int key);
-        [DllImport("imm32.dll")] private static extern bool ImmIsIME(IntPtr layout);
+        [DllImport("imm32.dll",CharSet=CharSet.Unicode)] private static extern uint ImmGetIMEFileName(IntPtr layout,StringBuilder name,uint count);
         [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern uint MapVirtualKeyEx(uint key,uint mode,IntPtr layout);
         [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int ToUnicodeEx(uint key,uint scan,byte[] state,[Out] StringBuilder text,int count,uint flags,IntPtr layout);
         // USB keyboard page -> PC set-1 position, independent of printed legends.
         private static readonly ushort[] Scans={0,0,0,0,0x1e,0x30,0x2e,0x20,0x12,0x21,0x22,0x23,0x17,0x24,0x25,0x26,0x32,0x31,0x18,0x19,0x10,0x13,0x1f,0x14,0x16,0x2f,0x11,0x2d,0x15,0x2c,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x1c,0x01,0x0e,0x0f,0x39,0x0c,0x0d,0x1a,0x1b,0x2b,0x2b,0x27,0x28,0x29,0x33,0x34,0x35,0x3a,0x3b,0x3c,0x3d,0x3e,0x3f,0x40,0x41,0x42,0x43,0x44,0x57,0x58,0xe037,0x46,0xe11d,0xe052,0xe047,0xe049,0xe053,0xe04f,0xe051,0xe04d,0xe04b,0xe050,0xe048,0x45,0xe035,0x37,0x4a,0x4e,0xe01c,0x4f,0x50,0x51,0x4b,0x4c,0x4d,0x47,0x48,0x49,0x52,0x53,0x56,0xe05d};
         private static int Usage(uint scan){for(int key=4;key<Scans.Length;key++)if(Scans[key]==scan)return key;return 0;}
         private static string Hex(IntPtr value){return value.ToInt64().ToString("x",CultureInfo.InvariantCulture);}
+        private static bool IsBaseLayout(uint layout){return (layout&0xffff)!=0&&(layout>>16)==(layout&0xffff);}
         private static TextContext Context(){
             DesktopSession.RequireConsole();IntPtr window=GetForegroundWindow();uint pid;uint thread=GetWindowThreadProcessId(window,out pid);
             if(window==IntPtr.Zero||thread==0)throw new SecurePolicyException("No foreground window for text input");
@@ -65,7 +66,9 @@ namespace OpenDesktopHid {
             if(String.IsNullOrEmpty(text)||text.Length>1024)throw new SecurePolicyException("text must contain 1..1024 UTF-16 units");
             if(text.Any(char.IsSurrogate))throw new SecurePolicyException("Supplementary or unpaired Unicode characters cannot be typed by this physical layout; no text input sent");
             TextContext context=Context();IntPtr layout=Layout(requested,context);
-            if(ImmIsIME(layout)||(unchecked((uint)layout.ToInt64())&0xf0000000)==0xe0000000)throw new SecurePolicyException("IME composition layouts are not supported for physical text planning");
+            // ImmIsIME also reports ordinary TSF-backed layouts as IMEs on modern Windows.
+            // Accept loaded base layouts only, and reject an associated legacy IME file.
+            if(!IsBaseLayout(unchecked((uint)layout.ToInt64()))||ImmGetIMEFileName(layout,null,0)!=0)throw new SecurePolicyException("IME composition layouts and layout variants are not supported for physical text planning");
             Dictionary<char,TextStroke> direct,dead;Tables(layout,context.capsLock,out direct,out dead);
             text=text.Replace("\r\n","\n").Replace('\r','\n').Normalize(NormalizationForm.FormC);
             var strokes=new List<TextStroke>();
@@ -83,6 +86,9 @@ namespace OpenDesktopHid {
             var after=Context();if(after.window!=context.window||after.foregroundLayout!=context.foregroundLayout||after.capsLock!=context.capsLock)throw new SecurePolicyException("Text input context changed during planning");
             return new TextPlan{strokes=strokes.ToArray(),context=context,mappingLayout=Hex(layout),characters=text.Length};
         }
-        internal static void SelfTest(){if(Scans.Length!=102||Usage(0x1e)!=4||Usage(0x10)!=20||Usage(0x56)!=100||Usage(0xe048)!=82||Accent('\u0302')!='^')throw new Exception("Keyboard position mapping failed");}
+        internal static void SelfTest(){
+            if(Scans.Length!=102||Usage(0x1e)!=4||Usage(0x10)!=20||Usage(0x56)!=100||Usage(0xe048)!=82||Accent('\u0302')!='^')throw new Exception("Keyboard position mapping failed");
+            if(!IsBaseLayout(0x08130813)||!IsBaseLayout(0x04090409)||IsBaseLayout(0)||IsBaseLayout(0xe0200411)||IsBaseLayout(0xf0010813))throw new Exception("Base keyboard layout classification failed");
+        }
     }
 }

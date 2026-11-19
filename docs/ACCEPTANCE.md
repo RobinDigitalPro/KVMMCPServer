@@ -1,5 +1,23 @@
 # Desktop acceptance
 
+## Base-layout detection correction, 0.7.1
+
+An additional test after reloading the Codex MCP connection caught a false IME
+classification of Belgian (Period). No input was sent on that refusal. The
+planner now restricts mapping to loaded base layouts and checks for an associated
+IME file instead of rejecting ordinary layouts on `ImmIsIME` alone. This Windows
+compatibility issue is also described in the
+[Chromium input implementation](https://chromium.googlesource.com/chromium/src/+/5e16d46c92747ae76914b9a5db114a19cdb00bde/ui/base/ime/win/imm32_manager.cc).
+Layout variants and composition input remain unsupported.
+
+The corrected executable passed nineteen native checks, including base/variant
+classification, and the suite passed all 67 JavaScript tests. A fresh physical
+MCP test matched the 59-character sample beginning with `MCP` exactly, followed
+by the same accent, AltGr, Caps Lock, chord, click and refusal checks below.
+The original Caps Lock state was restored. Agent documentation and the raw
+keyboard tool description now explicitly distinguish held keys (which can
+auto-repeat across tool round trips) from locally timed text and taps.
+
 ## Text, chords and atomic clicks, 0.7.0
 
 The suite has 67 passing JavaScript tests and nineteen native checks. Three
