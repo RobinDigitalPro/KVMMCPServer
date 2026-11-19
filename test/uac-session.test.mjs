@@ -2,7 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HidSession } from '../src/session.mjs';
 import { DesktopController } from '../src/controller.mjs';
-import { completedConsentRelease } from '../src/native-transport.mjs';
+import { completedConsentRelease, secureInputDeadline } from '../src/native-transport.mjs';
+
+test('expired UAC screenshots are refused before native input, independently of lease validity', () => {
+  const now = 100000;
+  assert.equal(secureInputDeadline(now + 60000, now - 1000, now), now + 29000);
+  for (const [lease, frame] of [[now + 60000, now - 30000], [now, now], [undefined, now], [now + 60000, NaN]]) {
+    assert.throws(() => secureInputDeadline(lease, frame, now), error => error.policyRefusal === true && /expired/.test(error.message));
+  }
+});
 
 test('a completed consent click consumes only its matching absolute button release', () => {
   const click = Buffer.from([3, 1, 100, 0, 200, 0, 0]);

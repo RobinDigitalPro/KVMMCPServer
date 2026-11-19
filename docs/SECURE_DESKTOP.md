@@ -1,9 +1,11 @@
 # Optional secure desktop / UAC support
 
-Implementation: 0.5.0 candidate. Native builds and ordinary desktop regression
-checks pass. A successful real UAC capture/consent/recording transition must be
-recorded before claiming host acceptance. The first service installation needs
-one manual Windows UAC approval; the extension cannot bootstrap its own rights.
+Implementation: 0.5.0. Physical-console tests on Windows 11 build 26100 verified
+real UAC capture, details expansion, approved probe elevation, refusal of an
+unapproved program path, expired-frame and wrong-owner rejection, and MCP stop.
+A 90-second MP4 containing Default/UAC/Default transitions and system audio
+decoded completely. The first service installation needs manual Windows UAC
+approval; the extension cannot bootstrap its own rights.
 
 ## Installation
 
@@ -84,8 +86,9 @@ before input. Unknown write outcomes fault control. A pre-input policy refusal
 preserves the lease so the caller can inspect a fresh frame.
 
 The first frame from a newly created normal DXGI duplicator can still be black.
-Inspect a subsequent fresh usable frame. Never treat a black/old frame as proof
-of the consent dialog or of a successful click.
+A secure-desktop transition can also show only the background while the dialog
+repaints. Inspect a subsequent fresh usable frame. Never use a black, blank or
+old frame as proof of the consent dialog or of a successful click.
 
 ## Application permissions
 
@@ -157,7 +160,7 @@ Stop the ordinary controller, then remove the optional service as administrator:
 The script retains protected files for review and leaves recordings, VHF input
 driver and optional third-party display/audio drivers untouched.
 
-## Host acceptance still required
+## Validation on another host
 
 1. Read-only SYSTEM helper status and a visually verified real consent screenshot.
 2. Denial of an unapproved executable, stale prompt and wrong input owner.
@@ -165,3 +168,8 @@ driver and optional third-party display/audio drivers untouched.
 4. Recording Default -> UAC -> Default, decoded video/audio and transition counts.
 5. Owner disconnect/cancel, local operator stop and clean restoration of normal
    desktop control. Do not claim acceptance based on compiler/unit tests alone.
+
+The physical Ctrl+Alt+F12 chord while on UAC has not been manually verified on
+the development host; the MCP emergency stop was verified there. Credential
+dialogs, other Windows UI profiles/languages and multi-monitor consent dialogs
+are not accepted by this host test. Unsupported identities/actions fail closed.

@@ -13,6 +13,16 @@ export function completedConsentRelease(previous, next) {
     previous.subarray(2).equals(next.subarray(2)));
 }
 
+export function secureInputDeadline(leaseDeadline, capturedAt, now = Date.now()) {
+  const deadline = Math.floor(Math.min(leaseDeadline ?? 0, capturedAt + 30000));
+  if (!Number.isFinite(deadline) || deadline <= now) {
+    const error = new Error('UAC screenshot or input lease expired; capture a fresh image');
+    error.policyRefusal = true;
+    throw error;
+  }
+  return deadline;
+}
+
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
   #captureWorker; #recordingListeners = new Set();
@@ -120,7 +130,9 @@ export class NativeTransport {
     // release must not reuse its consumed prompt or move on the next desktop.
     if (completedConsentRelease(this.#completedSecureClick, validated)) return this.releaseInput();
     this.#completedSecureClick = undefined;
-    const secure = Boolean(this.#securePrompt); this.#secureInputPending = secure;
+    const secure = Boolean(this.#securePrompt);
+    if (secure) secureInputDeadline(this.#inputDeadline, this.#secureCapturedAt);
+    this.#secureInputPending = secure;
     try {
       const result = await this.#request('send', validated.toString('hex'), secure);
       if (secure && result.secureDelegated === true && validated[0] === 3 && validated[1] === 1) this.#completedSecureClick = Buffer.from(validated);

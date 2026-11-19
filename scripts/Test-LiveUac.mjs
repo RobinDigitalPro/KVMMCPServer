@@ -1,7 +1,7 @@
 // Explicit live acceptance console. No implicit click or elevation approval.
 // Usage: node scripts/Test-LiveUac.mjs --live ABS_HID_EXE ABS_EXTERNAL_TEST_ROOT
 // Commands on stdin: acquire, capture, status, record, record-status, probe,
-// click (HID x/y supplied after visual inspection), release, quit.
+// click (HID x/y supplied after visual inspection), emergency-stop, release, quit.
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
@@ -30,8 +30,9 @@ try {
   await client.connect(transport);
   emit({ ready: true, status: await call('hid_status'), tools: (await client.listTools()).tools.length });
   for await (const line of createInterface({ input: process.stdin })) {
+    let operation;
     try {
-      const command = JSON.parse(line); let result;
+      const command = JSON.parse(line); operation = command.op; let result;
       if (command.op === 'quit') break;
       if (command.op === 'acquire') {
         if (token) await call('hid_release', { token }).catch(() => {});
@@ -41,6 +42,8 @@ try {
       else if (command.op === 'status') result = await call('hid_status');
       else if (command.op === 'record') { result = await call('screen_record_start', { token, maxSeconds: command.seconds ?? 30, fps: 10, maxWidth: 1280 }); recordingId = result.recordingId; }
       else if (command.op === 'record-status') result = await call('screen_record_status', { recordingId });
+      else if (command.op === 'record-stop') result = await call('screen_record_stop', { recordingId });
+      else if (command.op === 'emergency-stop') { result = await call('hid_emergency_stop'); token = undefined; }
       else if (command.op === 'click') {
         // Service independently verifies fresh dialog, program hash and button.
         result = await call('hid_mouse_absolute', { token, x: command.x, y: command.y, buttons: 1 });
@@ -56,13 +59,17 @@ try {
         const script = `$ErrorActionPreference='Stop';$p=Start-Process -FilePath '${escaped}' -Verb RunAs -PassThru -Wait;Write-Output $p.ExitCode`;
         probe = spawn(path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
         let out = '', error = ''; probe.stdout.on('data', data => { out += data; }); probe.stderr.on('data', data => { error += data; });
-        probe.once('exit', code => { probeResult = { launcherExitCode: code, elevatedProbeExitCode: code === 0 ? Number(out.trim()) : null, error: error.trim().slice(0, 500) }; receipt.probe = probeResult; emit({ probe: probeResult }); probe = undefined; });
+        probe.once('exit', code => { probeResult = { launcherExitCode: code, elevatedProbeExitCode: code === 0 ? Number(out.trim()) : null, error: error.trim().slice(0, 500) }; receipt.probe = probeResult; receipt.events.push({ at: new Date().toISOString(), op: 'probe-exit', expectedApplication: expected, result: probeResult }); emit({ probe: probeResult }); probe = undefined; });
         result = { probeStarted: true, expectedApplication: expected, approvalSent: false };
       } else throw new Error('Unknown acceptance command');
       receipt.events.push({ at: new Date().toISOString(), op: command.op, result });
       await fs.writeFile(path.join(root, 'uac-live-receipt.json'), JSON.stringify(receipt, null, 2));
       emit({ op: command.op, result });
-    } catch (error) { emit({ error: error.message }); }
+    } catch (error) {
+      receipt.events.push({ at: new Date().toISOString(), op: operation, error: error.message });
+      await fs.writeFile(path.join(root, 'uac-live-receipt.json'), JSON.stringify(receipt, null, 2));
+      emit({ error: error.message });
+    }
   }
 } finally {
   if (probe) probe.kill();
