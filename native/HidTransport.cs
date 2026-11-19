@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -75,6 +76,11 @@ namespace OpenDesktopHid
             uint current = CurrentId(), console = Native.WTSGetActiveConsoleSessionId();
             if (!MatchesConsole(current, console)) throw new InvalidOperationException("HID_CONSOLE_SESSION_REQUIRED: processSession=" + current + "; consoleSession=" + console + ". RDP input needs a separate session-aware backend.");
             if (!IsDefaultDesktop(InputDesktopName())) throw new InvalidOperationException("HID_INTERACTIVE_DESKTOP_REQUIRED: locked and secure desktops are not supported");
+        }
+        internal static void RequireControlledConsole(bool secureSupport) {
+            uint current=CurrentId(),console=Native.WTSGetActiveConsoleSessionId();
+            if(!MatchesConsole(current,console))throw new InvalidOperationException("HID_CONSOLE_SESSION_REQUIRED");
+            string desktop=InputDesktopName();if(!IsDefaultDesktop(desktop)&&!(secureSupport&&(desktop=="Winlogon"||desktop==null)))throw new InvalidOperationException("HID_INTERACTIVE_DESKTOP_REQUIRED");
         }
     }
 
@@ -231,7 +237,8 @@ namespace OpenDesktopHid
         {
             // Hardware-like HID must not be sent from an unrelated RDP session.
             // There is no silent SendInput fallback and no automatic tscon.
-            DesktopSession.RequireConsole();
+            bool secureSupport=SecureDesktopClient.Available()&&SecureDesktopClient.EnableStopMonitor();
+            DesktopSession.RequireControlledConsole(secureSupport);
             // Single writer across helper processes in this Windows session.
             using (Mutex mutex = new Mutex(false, "Local\\OpenDesktopHID-vmulti"))
             {
@@ -244,10 +251,11 @@ namespace OpenDesktopHid
                     // our driver's 3-second watchdog to clear a previous helper.
                     // Holding the mutex prevents another helper refreshing it.
                     Thread.Sleep(3500);
-                    DesktopSession.RequireConsole();
+                    DesktopSession.RequireControlledConsole(secureSupport);
                     using (Device device = new Device())
                     {
-                        object gate = new object(); bool stopped = false, released = false;
+                        object gate = new object(); bool stopped = false, released = false, paused = false;
+                        if(secureSupport&&!DesktopSession.IsDefaultDesktop(DesktopSession.InputDesktopName())){device.Release();mutex.ReleaseMutex();owned=false;paused=true;released=true;}
                         System.Diagnostics.Stopwatch heartbeat = System.Diagnostics.Stopwatch.StartNew();
                         // The service must send ping at least once per second. Operator
                         // Ctrl+Alt+F12 revokes this process; a new helper is required.
@@ -256,21 +264,24 @@ namespace OpenDesktopHid
                             lock (gate)
                             {
                                 if (stopped) return;
+                                string desktop=DesktopSession.InputDesktopName();
+                                bool secure=secureSupport&&(desktop=="Winlogon"||desktop==null);
+                                if(secure&&!paused&&owned){try{device.Release();released=true;}catch{}}
                                 string reason = !DesktopSession.MatchesConsole(DesktopSession.CurrentId(), Native.WTSGetActiveConsoleSessionId()) ? "console_session_changed" :
-                                    !DesktopSession.IsDefaultDesktop(DesktopSession.InputDesktopName()) ? "interactive_desktop_unavailable" :
+                                    !DesktopSession.IsDefaultDesktop(desktop)&&!secure ? "interactive_desktop_unavailable" :
                                     heartbeat.ElapsedMilliseconds > WatchdogMs ? "heartbeat_timeout" :
-                                    (Down(0x11) && Down(0x12) && Down(0x7b)) ? "operator_hotkey" : null;
+                                    ((Down(0x11) && Down(0x12) && Down(0x7b))||SecureDesktopClient.StopRequested()) ? "operator_hotkey" : null;
                                 if (reason != null)
                                 {
                                     stopped = true;
-                                    try { device.Release(); released = true; Emit(new { type = "stopped", released = true, error = reason }); }
+                                    try { if(!paused&&owned)device.Release(); released = true; Emit(new { type = "stopped", released = true, error = reason }); }
                                     catch (Exception error) { Emit(new { type = "stopped", released = false, error = error.Message }); }
                                 }
                             }
                         }, null, 100, 100))
                         {
                             bool administrator = new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent()).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
-                            Emit(new { type = "ready", driver = "vmulti-compatible", live = true, processId = System.Diagnostics.Process.GetCurrentProcess().Id, currentSession = DesktopSession.CurrentId(), consoleSession = Native.WTSGetActiveConsoleSessionId(), watchdogTimeoutMs = WatchdogMs, administrator = administrator });
+                            Emit(new { type = "ready", driver = "vmulti-compatible", live = true, processId = System.Diagnostics.Process.GetCurrentProcess().Id, currentSession = DesktopSession.CurrentId(), consoleSession = Native.WTSGetActiveConsoleSessionId(), watchdogTimeoutMs = WatchdogMs, administrator = administrator, secureDesktopSupported=secureSupport,inputPaused=paused });
                             try
                             {
                                 string line;
@@ -283,19 +294,32 @@ namespace OpenDesktopHid
                                     {
                                         if (stopped) throw new InvalidOperationException("SESSION_STOPPED");
                                         string op = req.ContainsKey("op") ? req["op"] as string : null;
-                                        if (op == "ping") { device.Heartbeat(); heartbeat.Restart(); }
-                                        else if (op == "send") { DesktopSession.RequireConsole(); device.Send(Wire.Decode(req["report"] as string)); heartbeat.Restart(); released = false; }
-                                        else if (op == "release") { device.Release(); released = true; }
-                                        else throw new ArgumentException("Unknown operation");
-                                        Emit(new { id = id, ok = true, driverAcknowledged = op == "send" });
+                                        try {
+                                            DesktopSession.RequireControlledConsole(secureSupport);
+                                            string currentDesktop=DesktopSession.InputDesktopName();bool secure=secureSupport&&(currentDesktop=="Winlogon"||currentDesktop==null);
+                                            if(secure&&!paused){device.Release();released=true;mutex.ReleaseMutex();owned=false;paused=true;Emit(new{type="desktop_transition",inputPaused=true,desktop="Winlogon"});}
+                                            if(!secure&&paused){try{owned=mutex.WaitOne(0);}catch(AbandonedMutexException){owned=true;}if(!owned)throw new SecurePolicyException("Secure desktop is still controlled");paused=false;device.Release();released=true;Emit(new{type="desktop_transition",inputPaused=false,desktop="Default"});}
+                                            if (op == "ping") {if(!paused)device.Heartbeat();heartbeat.Restart();}
+                                            else if(op=="send") {
+                                                byte[] report=Wire.Decode(req["report"] as string);heartbeat.Restart();
+                                                if(paused){
+                                                    bool neutral=(report[0]==7&&report.Skip(1).All(value=>value==0)) || (report[0]==4&&report.Skip(1).All(value=>value==0));
+                                                    if(!neutral){object challenge,deadline;req.TryGetValue("promptId",out challenge);req.TryGetValue("deadlineUtcMs",out deadline);if(!(challenge is string))throw new SecurePolicyException("Capture a fresh UAC screenshot before input");SecureDesktopClient.Call(new{op="input",promptId=(string)challenge,report=req["report"] as string,deadlineUtcMs=deadline});}
+                                                }else{DesktopSession.RequireConsole();if(req.ContainsKey("promptId")){if((report[0]==3||report[0]==4)&&report[1]==0&&report[report.Length-1]==0){device.Release();released=true;}else if(report[0]==7&&report.Skip(1).All(value=>value==0)){device.Release();released=true;}else throw new SecurePolicyException("UAC closed; capture a fresh ordinary desktop before input");}else{device.Send(report);released=false;}}
+                                                heartbeat.Restart();
+                                            }
+                                            else if(op=="release"){if(!paused)device.Release();released=true;}
+                                            else throw new ArgumentException("Unknown operation");
+                                            Emit(new { id = id, ok = true, driverAcknowledged = op == "send"&&!paused, secureDelegated=op=="send"&&paused });
+                                        }catch(SecurePolicyException error){heartbeat.Restart();Emit(new{id=id,ok=false,error=error.Message,policyRefusal=true,inputSent=false});}
                                     }
                                 }
                             }
-                            finally { lock (gate) { stopped = true; if (!released) device.Release(); } }
+                            finally { lock (gate) { stopped = true; if (!released&&owned) device.Release(); } }
                         }
                     }
                 }
-                finally { mutex.ReleaseMutex(); }
+                finally { if(owned)mutex.ReleaseMutex(); }
             }
             return 0;
         }

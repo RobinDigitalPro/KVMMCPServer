@@ -7,7 +7,7 @@ and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.4.0** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.5.0** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
@@ -17,8 +17,10 @@ shared-controller live test. See [acceptance](docs/ACCEPTANCE.md).
 This is a development release of [KVMMCPServer](https://github.com/RobinDigitalPro/KVMMCPServer), using the OpenDesktopHID driver. No production-signed driver distribution is provided. Other displays/DPI and physical
 hotkey acceptance remain separate tests.
 
-Secure-desktop/UAC support is still a separate capability; the current tools
-stop there. See the [implementation investigation](docs/SECURE_DESKTOP_PLAN.md).
+An optional, separately installed SYSTEM service provides UAC screenshots and
+one-shot consent clicks using the same eleven MCP tools. Approval is restricted
+to administrator-staged executable paths and SHA-256 hashes. See
+[secure desktop setup and limits](docs/SECURE_DESKTOP.md).
 
 ## Architecture
 
@@ -90,6 +92,13 @@ fall back to video-only recording with an explicit `audioStatus`/`audioReason`.
 An optional virtual audio output can provide a playback endpoint on a headless
 host. Third-party audio drivers are installed separately and are not bundled.
 
+For a physical Windows workstation used without an attached monitor, optional
+[Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)
+can supply a persistent virtual screen. If no playback output is available,
+[VB-CABLE](https://vb-audio.com/Cable/) can supply an optional audio endpoint.
+These are headless-host setup tips, not project dependencies: neither driver is
+bundled, forked or required by KVMMCPServer. VB-CABLE has its own license.
+
 ```powershell
 node src/manage.mjs status --data-root D:\AgentData\desktop-hid
 node src/manage.mjs emergency-stop --data-root D:\AgentData\desktop-hid
@@ -114,10 +123,11 @@ recording receipts under `recordings/`. Recording state is included in status. A
 controller leaves a final running=false status. The management command also
 marks an old status as stale.
 
-Live mode requires the active physical-console session and normal Default input
-desktop. RDP mismatch and secure desktops are refused. Remote viewing should
-share that physical console. There is no RDP backend or automatic session
-transfer. Secure-desktop access is outside this version.
+Live mode requires the active physical-console session. Remote viewing should
+share that physical console; there is no RDP backend or automatic session transfer.
+Normal capture/input use the Default desktop. With the optional secure-desktop
+service, actual Windows consent dialogs can also be captured and their identified
+buttons operated. Other secure/locked desktops and credential entry are refused.
 
 Keyboard usages represent physical keys, not Unicode. Usage 4 produced Q on
 Belgian AZERTY. Relative movement is in HID counts; Windows acceleration can

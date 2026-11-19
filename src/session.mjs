@@ -62,6 +62,7 @@ export class HidSession {
       }
       try { await this.#transport.send(report); }
       catch (error) {
+        if (error.policyRefusal === true) { await this.#transport.releaseInput?.(); throw error; }
         this.#faulted = true;
         // Attempt every neutral report even if one transport write fails.
         await this.#release().catch(() => {});
@@ -86,6 +87,9 @@ export class HidSession {
   }
   async #release() {
     this.#lease = undefined;
+    if (typeof this.#transport.releaseInput === 'function') {
+      try { await this.#transport.releaseInput(); return; } catch (error) { this.#faulted = true; throw error; }
+    }
     const reports = [relativeReports()[0], keyboardReport()];
     if (this.#absolute) reports.push(absoluteReport(this.#absolute));
     let failure;

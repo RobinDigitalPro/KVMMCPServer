@@ -1,7 +1,9 @@
 # Secure desktop capture and input: investigation
 
-Status: design investigation, not implemented or enabled. Normal UAC remains
-enabled. Current tools still stop at non-Default input desktops.
+Status: design investigation implemented as a 0.5.0 candidate. Normal UAC remains
+enabled. Host installation and real secure-desktop acceptance are still pending;
+compiler/unit tests alone do not establish UAC support. Current setup, precise
+scope and limits are in [SECURE_DESKTOP.md](SECURE_DESKTOP.md).
 
 ## What blocks the current implementation
 

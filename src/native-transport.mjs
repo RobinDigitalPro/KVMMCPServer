@@ -10,6 +10,7 @@ import { CaptureWorker } from './capture-worker.mjs';
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
   #captureWorker; #recordingListeners = new Set();
+  #securePrompt; #secureCapturedAt = 0; #inputDeadline; #secureInputPending = false;
   constructor(executable, { dataRoot, onFault = () => {} } = {}) {
     if (typeof executable !== 'string' || !executable) throw new TypeError('native executable path required');
     if (dataRoot && !path.isAbsolute(dataRoot)) throw new TypeError('capture dataRoot must be absolute');
@@ -26,12 +27,13 @@ export class NativeTransport {
       try {
         const message = JSON.parse(line);
         if (message.type === 'ready') { this.#metadata = message; this.#resolveReady(message); }
+        else if (message.type === 'desktop_transition') { this.#metadata = { ...this.#metadata, inputPaused: message.inputPaused, desktop: message.desktop }; if (!message.inputPaused) this.#securePrompt = undefined; }
         else if (message.type === 'stopped' || (message.ok === false && message.id === undefined)) this.#fail(new Error(message.error ?? 'local operator or native watchdog stopped the session'));
         else {
           const request = this.#pending.get(message.id);
           if (!request) return;
           this.#pending.delete(message.id); clearTimeout(request.timer);
-          if (message.ok === true) request.resolve(message); else request.reject(new Error(message.error ?? 'native operation failed'));
+          if (message.ok === true) request.resolve(message); else { const error = new Error(message.error ?? 'native operation failed'); error.policyRefusal = message.policyRefusal === true && message.inputSent === false; request.reject(error); }
         }
       } catch (error) { this.#fail(error); }
     });
@@ -45,7 +47,7 @@ export class NativeTransport {
     if (!this.#closing) this.#onFault(error);
   }
   async ready() {
-    const timer = setTimeout(() => this.#fail(new Error('native startup timed out')), 5000);
+    const timer = setTimeout(() => this.#fail(new Error('native startup timed out')), 10000);
     try { return await this.#ready; } finally { clearTimeout(timer); }
   }
   status() { return { connected: Boolean(this.#metadata) && !this.#fatal && this.#child.exitCode === null, ...this.#metadata, ...(this.#fatal ? { error: this.#fatal.message } : {}) }; }
@@ -67,7 +69,7 @@ export class NativeTransport {
   async capture({ signal, ...options } = {}) {
     if (!this.#dataRoot) throw new Error('Capture requires an external --data-root configuration');
     if (this.#fatal) throw this.#fatal;
-    if (this.recordingAvailable) return this.#screen().snapshot({ ...options, signal });
+    if (this.recordingAvailable) { const frame = await this.#screen().snapshot({ ...options, signal }); this.#securePrompt = frame.desktop === 'Winlogon' ? frame.uacPromptId : undefined; this.#secureCapturedAt = Date.parse(frame.capturedUtc); return frame; }
     if (options.format === 'jpeg' || options.maxWidth || options.includeCursor === true) throw new Error('Extended snapshots require ScreenCapture.exe');
     signal?.throwIfAborted();
     const frameId = randomUUID();
@@ -92,20 +94,25 @@ export class NativeTransport {
     signal?.throwIfAborted();
     return { ...metadata, frameId, data };
   }
-  async #request(op, report) {
+  setInputDeadline(deadline) { this.#inputDeadline = deadline; }
+  cancelPendingUacInput() { if (this.#secureInputPending) this.#child.kill(); }
+  async releaseInput() { this.#securePrompt = undefined; return this.#request('release'); }
+  async #request(op, report, secure = false) {
     await this.#ready;
     if (this.#fatal) throw this.#fatal;
     const id = ++this.#id;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.#fail(new Error('native write timed out; kernel watchdog must release held input')), 3000);
+      const timeout = secure || (op === 'ping' && this.#metadata?.secureDesktopSupported) ? 15000 : 3000;
+      const timer = setTimeout(() => this.#fail(new Error('native write timed out; kernel watchdog must release held input')), timeout);
       this.#pending.set(id, { resolve, reject, timer });
-      this.#child.stdin.write(JSON.stringify({ id, op, ...(report ? { report } : {}) }) + '\n');
+      this.#child.stdin.write(JSON.stringify({ id, op, ...(report ? { report } : {}), ...(secure ? { promptId: this.#securePrompt, deadlineUtcMs: Math.floor(Math.min(this.#inputDeadline ?? 0, this.#secureCapturedAt + 30000)) } : {}) }) + '\n');
     });
   }
-  send(report) { return this.#request('send', validateReport(report).toString('hex')); }
+  async send(report) { const secure = Boolean(this.#securePrompt); this.#secureInputPending = secure; try { return await this.#request('send', validateReport(report).toString('hex'), secure); } finally { this.#secureInputPending = false; } }
   ping() { return this.#request('ping'); }
   async close() {
     this.#closing = true;
+    this.cancelPendingUacInput();
     await this.#captureWorker?.close().catch(() => {});
     if (!this.#fatal) {
       try { await this.#request('release'); } finally { this.#child.stdin.end(); }

@@ -44,6 +44,7 @@ export class DesktopController {
   }
   attach(label = 'local-agent') { const id = randomUUID(); this.#clients.set(id, String(label).slice(0, 100)); return id; }
   async detach(client) {
+    if (this.#owner?.client === client) this.#transport?.cancelPendingUacInput?.();
     for (const capture of this.#captures.values()) if (capture.client === client) capture.abort.abort(new Error('Agent disconnected'));
     this.#clients.delete(client);
     if (this.#owner?.client === client) {
@@ -57,7 +58,7 @@ export class DesktopController {
   status() {
     const native = this.#transport?.status?.();
     const control = this.#session?.status() ?? { owner: null, leaseRemainingMs: 0, operatorStopped: this.#stopped.stopped, faulted: false };
-    return { version: '0.4.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
+    return { version: '0.5.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
       control: { ...control, operatorStopped: this.#stopped.stopped || (!this.#closing && control.operatorStopped), jobId: control.owner ? this.#owner?.jobId ?? null : null, clientId: control.owner ? this.#owner?.client ?? null : null },
       operatorStop: this.#stopped, clients: this.#clients.size, activeCaptures: this.#captures.size, lastAction: this.#lastAction ?? null,
       screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
@@ -67,6 +68,7 @@ export class DesktopController {
     if (this.#stopPromise) return this.#stopPromise;
     this.#stopped = { stopped: true, reason: String(reason).slice(0, 300), stoppedUtc: new Date().toISOString() };
     clearInterval(this.#heartbeat);
+    this.#transport?.cancelPendingUacInput?.();
     for (const capture of this.#captures.values()) capture.abort.abort(new Error('Operator stopped desktop control'));
     // emergencyStop marks the session synchronously, interrupting split input.
     const release = this.#session?.emergencyStop() ?? Promise.resolve();
@@ -81,7 +83,7 @@ export class DesktopController {
     return this.#stopPromise;
   }
   async call(client, name, rawArgs = {}, { signal } = {}) {
-    let action;
+    let action, cancelUac;
     try {
       if (!this.#clients.has(client)) throw new Error('Unknown local connection');
       const args = parseTool(name, rawArgs);
@@ -106,6 +108,9 @@ export class DesktopController {
       }
       if (this.#owner?.client !== client || this.#owner.token !== args.token) throw new Error('Lease belongs to another connection or is invalid');
       await this.#session.assertLease(args.token);
+      this.#transport?.setInputDeadline?.(Date.now() + this.#session.status().leaseRemainingMs);
+      cancelUac = () => this.#transport?.cancelPendingUacInput?.();
+      signal?.addEventListener('abort', cancelUac, { once: true });
       action = { id: randomUUID(), tool: name, clientId: client, owner: this.#session.status().owner, jobId: this.#owner.jobId, startedUtc: new Date().toISOString(), state: 'running' };
       this.#lastAction = action;
       await this.publish({ event: 'action_started', ...action });
@@ -144,6 +149,7 @@ export class DesktopController {
           throw error;
         }
       } else if (name === 'hid_release') {
+        this.#transport?.cancelPendingUacInput?.();
         await this.#session.release(args.token); this.#owner = undefined;
       } else {
         const { token, ...options } = args;
@@ -162,7 +168,7 @@ export class DesktopController {
         await this.#session.release(token).catch(() => {});
       }
       return { isError: true, content: [{ type: 'text', text: message }] };
-    }
+    } finally { if (cancelUac) signal?.removeEventListener('abort', cancelUac); }
   }
   async #stopRecording(reason) {
     if (!['starting', 'recording', 'stopping'].includes(this.#recording?.state)) return;
@@ -178,6 +184,7 @@ export class DesktopController {
   }
   async close() {
     if (this.#closing) return;
+    this.#transport?.cancelPendingUacInput?.();
     this.#closing = true; clearInterval(this.#timer); clearInterval(this.#heartbeat);
     for (const capture of this.#captures.values()) capture.abort.abort(new Error('Controller shutting down'));
     await this.#session?.emergencyStop().catch(() => {});

@@ -51,14 +51,18 @@ static std::string Utc() {
     SYSTEMTIME now; GetSystemTime(&now); char text[40];
     sprintf_s(text, "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds); return text;
 }
-static void RequireConsole() {
+static std::wstring RequireConsole() {
     DWORD current = 0; ProcessIdToSessionId(GetCurrentProcessId(), &current);
     if (current != WTSGetActiveConsoleSessionId()) throw std::runtime_error("console_session_changed");
     HDESK desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
-    if (!desktop) throw std::runtime_error("input_desktop_unavailable");
+    // Secure-desktop ACLs can hide even its name from this ordinary process.
+    // The SYSTEM broker must positively identify consent.exe before any pixels
+    // are accepted; an inaccessible/locked desktop is never captured blindly.
+    if (!desktop) return L"Winlogon";
     wchar_t name[256] = {}; DWORD length = 0;
     const BOOL ok = GetUserObjectInformationW(desktop, UOI_NAME, name, sizeof(name), &length); CloseDesktop(desktop);
-    if (!ok || _wcsicmp(name, L"Default") != 0) throw std::runtime_error("input_desktop_not_default");
+    if (!ok || (_wcsicmp(name,L"Default")!=0 && _wcsicmp(name,L"Winlogon")!=0)) throw std::runtime_error("input_desktop_not_supported");
+    return name;
 }
 static int Number(const std::string& text, int minimum, int maximum) {
     size_t used = 0; const int result = std::stoi(text, &used);
@@ -67,7 +71,8 @@ static int Number(const std::string& text, int minimum, int maximum) {
 static void Identifier(const std::string& value) {
     if (value.size() != 36 || value.find_first_not_of("0123456789abcdef-") != std::string::npos) throw std::runtime_error("invalid_identifier");
 }
-struct Frame { UINT width = 0, height = 0; std::vector<BYTE> pixels; POINT cursor = {}; bool cursorIncluded = false; };
+struct Frame { UINT width = 0, height = 0; std::vector<BYTE> pixels; POINT cursor = {}; bool cursorIncluded = false; std::string desktop="Default",uacPromptId; };
+#include "SecureDesktopCapture.h"
 #include "SystemAudio.h"
 #include "../test/SyntheticSystemAudio.h"
 
@@ -78,12 +83,13 @@ class Capture {
     ComPtr<ID3D11Texture2D> staging;
     Frame cached;
     bool separatePointer = true;
+    std::wstring lastDesktop;
 public:
     ComPtr<IWICImagingFactory> wic;
     Capture() { Check(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)), "WIC factory"); }
     void Reset() { duplication.Reset(); staging.Reset(); context.Reset(); device.Reset(); cached = {}; }
     void Initialize() {
-        RequireConsole();
+        if(RequireConsole()!=L"Default")throw std::runtime_error("default_desktop_required_for_dxgi");
         // Select the primary monitor's adapter, including hybrid-GPU systems.
         ComPtr<IDXGIFactory1> factory; Check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "DXGI factory");
         for (UINT a = 0;; ++a) {
@@ -105,7 +111,9 @@ public:
         throw std::runtime_error("primary_display_unavailable");
     }
     Frame Grab(bool cursor) {
-        RequireConsole();
+        const std::wstring desktop=RequireConsole();
+        if(desktop!=lastDesktop){Reset();lastDesktop=desktop;}
+        if(desktop==L"Winlogon"){Frame frame=SecureDesktopFrame(cursor);if(RequireConsole()!=desktop)throw std::runtime_error("desktop_changed_during_secure_capture");return frame;}
         if (!duplication) Initialize();
         ComPtr<IDXGIResource> resource; DXGI_OUTDUPL_FRAME_INFO info = {};
         HRESULT hr = duplication->AcquireNextFrame(cached.pixels.empty() ? 1000 : 0, &info, &resource);
@@ -130,7 +138,7 @@ public:
             } catch (...) { duplication->ReleaseFrame(); throw; }
             Check(duplication->ReleaseFrame(), "release desktop frame");
         }
-        RequireConsole();
+        if(RequireConsole()!=desktop){Reset();throw std::runtime_error("desktop_changed_during_capture");}
         if (cached.pixels.empty()) throw std::runtime_error("desktop_frame_unavailable");
         Frame frame = cached; GetCursorPos(&frame.cursor);
         if (cursor && !separatePointer) frame.cursorIncluded = true;
@@ -223,6 +231,7 @@ public:
     std::string id, startedUtc; fs::path partial, final;
     Clock::time_point start, next; int seconds = 0, fps = 0, maxWidth = 0, bitrate = 0;
     UINT width = 0, height = 0, sourceWidth = 0, sourceHeight = 0; unsigned long frames = 0; LONGLONG mediaEnd = 0;
+    unsigned long secureFrames=0,transitionFrames=0,desktopTransitions=0;std::string lastFrameDesktop;Clock::time_point transitionSince;
     bool active() const { return writer != nullptr; }
     void Begin(Capture& capture, const fs::path& root, const std::string& identity, int duration, int rate, int size, int bits, bool includeAudio = true) {
         if (active()) throw std::runtime_error("recording_already_active");
@@ -230,6 +239,7 @@ public:
         Frame source = capture.Grab(true), first = capture.Scale(source, size, true);
         id = identity; seconds = duration; fps = rate; maxWidth = size; bitrate = bits; width = first.width; height = first.height; sourceWidth = source.width; sourceHeight = source.height;
         frames = 0; mediaEnd = 0; audioFrames = 0; audioCapturedFrames = 0; audioPeak = 0; audioRequested = includeAudio;
+        secureFrames=transitionFrames=desktopTransitions=0;lastFrameDesktop.clear();transitionSince={};
         audioEnabled = includeAudio && systemAudio->Initialize(); audioState = !includeAudio ? "disabled" : audioEnabled ? "capturing" : "unavailable"; audioReason = includeAudio ? systemAudio->error : "explicitly_disabled";
         partial = root / L"recordings" / fs::u8path(id + ".partial.mp4"); final = root / L"recordings" / fs::u8path(id + ".mp4");
         fs::create_directories(partial.parent_path()); if (fs::exists(partial) || fs::exists(final)) throw std::runtime_error("output_already_exists");
@@ -286,6 +296,8 @@ public:
     }
     void Write(const Frame& frame, LONGLONG timestamp) {
         if (frame.width != width || frame.height != height) throw std::runtime_error("display_dimensions_changed");
+        if(frame.desktop=="Winlogon")++secureFrames;if(frame.desktop=="Transition")++transitionFrames;
+        if(!lastFrameDesktop.empty()&&lastFrameDesktop!=frame.desktop)++desktopTransitions;lastFrameDesktop=frame.desktop;
         ComPtr<IMFMediaBuffer> buffer; const DWORD bytes = static_cast<DWORD>(frame.pixels.size()); Check(MFCreateMemoryBuffer(bytes, &buffer), "video buffer");
         BYTE* data = nullptr; Check(buffer->Lock(&data, nullptr, nullptr), "lock video buffer"); memcpy(data, frame.pixels.data(), bytes); Check(buffer->Unlock(), "unlock video buffer"); Check(buffer->SetCurrentLength(bytes), "video buffer length");
         ComPtr<IMFSample> sample; Check(MFCreateSample(&sample), "video sample"); Check(sample->AddBuffer(buffer.Get()), "sample buffer"); Check(sample->SetSampleTime(timestamp), "sample time");
@@ -294,7 +306,7 @@ public:
         Check(sample->SetSampleDuration(duration), "sample duration"); Check(writer->WriteSample(stream, sample.Get()), "encode video sample"); mediaEnd = timestamp + duration; ++frames;
     }
     std::string Status(const char* state, const std::string& reason = "") const {
-        std::ostringstream out; out << "\"recordingId\":" << Json(id) << ",\"state\":" << Json(state) << ",\"reason\":" << Json(reason) << ",\"startedUtc\":" << Json(startedUtc) << ",\"maxSeconds\":" << seconds << ",\"fps\":" << fps << ",\"width\":" << width << ",\"height\":" << height << ",\"frames\":" << frames << ",\"durationMs\":" << mediaEnd / 10000 << ",\"path\":" << Json(Utf8(final.wstring())) << ",\"partialPath\":" << Json(Utf8(partial.wstring())) << ",\"audio\":" << (audioEnabled ? "true" : "false") << ",\"systemAudioRequested\":" << (audioRequested ? "true" : "false") << ",\"audioSource\":" << Json(systemAudio->Source()) << ",\"audioStatus\":" << Json(audioState) << ",\"audioReason\":" << Json(audioReason) << ",\"audioSampleRate\":" << (audioEnabled ? SystemAudio::Rate : 0) << ",\"audioChannels\":" << (audioEnabled ? SystemAudio::Channels : 0) << ",\"audioFrames\":" << audioFrames << ",\"audioCapturedFrames\":" << audioCapturedFrames << ",\"audioPeak\":" << audioPeak << ",\"microphone\":false,\"cursorIncludedInImage\":true"; return out.str();
+        std::ostringstream out; out << "\"recordingId\":" << Json(id) << ",\"state\":" << Json(state) << ",\"reason\":" << Json(reason) << ",\"startedUtc\":" << Json(startedUtc) << ",\"maxSeconds\":" << seconds << ",\"fps\":" << fps << ",\"width\":" << width << ",\"height\":" << height << ",\"frames\":" << frames << ",\"durationMs\":" << mediaEnd / 10000 << ",\"path\":" << Json(Utf8(final.wstring())) << ",\"partialPath\":" << Json(Utf8(partial.wstring())) << ",\"audio\":" << (audioEnabled ? "true" : "false") << ",\"systemAudioRequested\":" << (audioRequested ? "true" : "false") << ",\"audioSource\":" << Json(systemAudio->Source()) << ",\"audioStatus\":" << Json(audioState) << ",\"audioReason\":" << Json(audioReason) << ",\"audioSampleRate\":" << (audioEnabled ? SystemAudio::Rate : 0) << ",\"audioChannels\":" << (audioEnabled ? SystemAudio::Channels : 0) << ",\"audioFrames\":" << audioFrames << ",\"audioCapturedFrames\":" << audioCapturedFrames << ",\"audioPeak\":" << audioPeak << ",\"microphone\":false,\"cursorIncludedInImage\":true,\"secureDesktopFrames\":" << secureFrames << ",\"transitionFrames\":" << transitionFrames << ",\"desktopTransitions\":" << desktopTransitions; return out.str();
     }
     void Finish(const char* state, const std::string& reason) {
         if (!active()) return;
@@ -310,7 +322,13 @@ public:
         if (Clock::now() - start >= std::chrono::seconds(seconds)) { Finish("completed", "duration_limit"); return; }
         PumpAudio();
         if (Clock::now() >= next) {
-            Frame source = capture.Grab(true); if (source.width != sourceWidth || source.height != sourceHeight) throw std::runtime_error("display_dimensions_changed");
+            Frame source;
+            try{source=capture.Grab(true);transitionSince={};}
+            catch(const std::exception& error){const std::string reason=error.what();bool transient=reason=="secure_desktop_busy"||reason=="secure_desktop_capture_unavailable"||reason=="desktop_changed_during_secure_capture"||reason=="desktop_changed_during_capture"||reason=="display_configuration_changed"||reason=="desktop_frame_unavailable";
+                if(!transient)throw;const auto now=Clock::now();if(transitionSince==Clock::time_point{})transitionSince=now;if(now-transitionSince>std::chrono::seconds(reason=="secure_desktop_busy"?5:1))throw;
+                source.width=sourceWidth;source.height=sourceHeight;source.desktop="Transition";source.pixels.resize(static_cast<size_t>(sourceWidth)*sourceHeight*4,0);for(size_t i=3;i<source.pixels.size();i+=4)source.pixels[i]=255;
+            }
+            if (source.width != sourceWidth || source.height != sourceHeight) throw std::runtime_error("display_dimensions_changed");
             const LONGLONG time = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count() * 10;
             if (time < static_cast<LONGLONG>(seconds) * 10000000) Write(capture.Scale(source, maxWidth, true), time);
             const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count(); const auto interval = 1000000 / fps;
@@ -428,9 +446,9 @@ int wmain(int argc, wchar_t** argv) {
                     } else if (op == "snapshot" && args.size() == 6) {
                         Identifier(args[2]); const bool jpeg = args[3] == "jpeg"; if (!jpeg && args[3] != "png") throw std::runtime_error("invalid_image_format");
                         Frame source = capture.Grab(Number(args[5], 0, 1) != 0); const std::string capturedUtc = Utc(); Frame frame = capture.Scale(source, Number(args[4], 0, 3840), false);
-                        const fs::path output = root / L"captures" / fs::u8path(args[2] + (jpeg ? ".jpg" : ".png")); fs::create_directories(output.parent_path()); capture.Save(frame, output, jpeg); RequireConsole();
+                        const fs::path output = root / L"captures" / fs::u8path(args[2] + (jpeg ? ".jpg" : ".png")); fs::create_directories(output.parent_path()); capture.Save(frame, output, jpeg); if(Utf8(RequireConsole())!=source.desktop)throw std::runtime_error("desktop_changed_during_snapshot");
                         DWORD session = 0; ProcessIdToSessionId(GetCurrentProcessId(), &session);
-                        std::ostringstream out; out << "{\"id\":" << request << ",\"ok\":true,\"frameId\":" << Json(args[2]) << ",\"path\":" << Json(Utf8(output.wstring())) << ",\"capturedUtc\":" << Json(capturedUtc) << ",\"currentSession\":" << session << ",\"consoleSession\":" << WTSGetActiveConsoleSessionId() << ",\"display\":\"primary\",\"left\":0,\"top\":0,\"width\":" << frame.width << ",\"height\":" << frame.height << ",\"sourceWidth\":" << source.width << ",\"sourceHeight\":" << source.height << ",\"cursor\":{\"x\":" << source.cursor.x << ",\"y\":" << source.cursor.y << "},\"cursorIncludedInImage\":" << (frame.cursorIncluded ? "true" : "false") << ",\"mimeType\":" << Json(jpeg ? "image/jpeg" : "image/png") << ",\"inputSent\":false}"; Emit(out.str()); continue;
+                        std::ostringstream out; out << "{\"id\":" << request << ",\"ok\":true,\"frameId\":" << Json(args[2]) << ",\"path\":" << Json(Utf8(output.wstring())) << ",\"capturedUtc\":" << Json(capturedUtc) << ",\"currentSession\":" << session << ",\"consoleSession\":" << WTSGetActiveConsoleSessionId() << ",\"display\":\"primary\",\"desktop\":" << Json(source.desktop) << ",\"uacPromptId\":" << Json(source.uacPromptId) << ",\"left\":0,\"top\":0,\"width\":" << frame.width << ",\"height\":" << frame.height << ",\"sourceWidth\":" << source.width << ",\"sourceHeight\":" << source.height << ",\"cursor\":{\"x\":" << source.cursor.x << ",\"y\":" << source.cursor.y << "},\"cursorIncludedInImage\":" << (frame.cursorIncluded ? "true" : "false") << ",\"mimeType\":" << Json(jpeg ? "image/jpeg" : "image/png") << ",\"inputSent\":false}"; Emit(out.str()); continue;
                     } else throw std::runtime_error("invalid_command");
                     Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}");
                 } catch (const std::exception& error) { Emit("{\"id\":" + std::to_string(request) + ",\"ok\":false,\"error\":" + Json(error.what()) + "}"); }

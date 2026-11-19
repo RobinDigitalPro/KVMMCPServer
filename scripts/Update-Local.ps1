@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Configuration,
     [Parameter(Mandatory=$true)][string]$CaptureExecutable,
+    [string]$HidExecutable,
     [switch]$ConfirmIdle,
     [switch]$CheckOnly
 )
@@ -15,7 +16,8 @@ $taskCapture = [IO.Path]::GetFullPath($CaptureExecutable)
 foreach ($taskValue in @($taskConfig.sourceRoot,$taskConfig.dataRoot,$taskConfig.nativeExecutable,$taskConfig.nodeExecutable,$CaptureExecutable)) { if (-not [IO.Path]::IsPathRooted($taskValue)) { throw 'Deployment paths must be absolute' } }
 if (-not (Test-Path -LiteralPath (Join-Path $taskTarget 'src\mcp.mjs')) -or -not (Test-Path -LiteralPath $taskCapture) -or [IO.Path]::GetFileName($taskCapture) -ne 'ScreenCapture.exe') { throw 'Expected installed source and reviewed ScreenCapture.exe' }
 $taskCandidateVersion = (Get-Content -LiteralPath (Join-Path $taskSource 'package.json') -Raw | ConvertFrom-Json).version
-if ($taskCandidateVersion -notin @('0.3.0','0.4.0')) { throw 'This updater expects a reviewed 0.3.0 or 0.4.0 source release' }
+if ($taskCandidateVersion -notin @('0.3.0','0.4.0','0.5.0')) { throw 'This updater expects a reviewed 0.3.0, 0.4.0 or 0.5.0 source release' }
+if ($taskCandidateVersion -eq '0.5.0' -and (-not $HidExecutable -or -not [IO.Path]::IsPathRooted($HidExecutable) -or [IO.Path]::GetFileName($HidExecutable) -ne 'HidTransport.exe' -or -not (Test-Path -LiteralPath $HidExecutable))) { throw '0.5.0 also requires the matching reviewed -HidExecutable' }
 # Validate the allowlist before stopping anything.
 $taskFiles = @(git -C $taskSource ls-files)
 if ($LASTEXITCODE -ne 0 -or $taskFiles.Count -lt 55) { throw 'Run from a complete reviewed Git checkout' }
@@ -55,6 +57,12 @@ foreach ($taskRelative in $taskFiles) {
     if ((Get-FileHash -LiteralPath $taskFrom).Hash -ne (Get-FileHash -LiteralPath $taskTo).Hash) { throw 'Deployment copy hash mismatch; controller remains stopped' }
 }
 $taskNativeTarget = Join-Path ([IO.Path]::GetDirectoryName($taskConfig.nativeExecutable)) 'ScreenCapture.exe'
+if ($HidExecutable) {
+    $taskHidSource=[IO.Path]::GetFullPath($HidExecutable)
+    if(Test-Path -LiteralPath $taskConfig.nativeExecutable){Copy-Item -LiteralPath $taskConfig.nativeExecutable -Destination (Join-Path $taskBackup 'HidTransport.exe')}
+    if($taskHidSource -ne $taskConfig.nativeExecutable){Copy-Item -LiteralPath $taskHidSource -Destination $taskConfig.nativeExecutable -Force}
+    if((Get-FileHash -LiteralPath $taskHidSource).Hash -ne (Get-FileHash -LiteralPath $taskConfig.nativeExecutable).Hash){throw 'HID helper hash mismatch'}
+}
 if (Test-Path -LiteralPath $taskNativeTarget) { Copy-Item -LiteralPath $taskNativeTarget -Destination (Join-Path $taskBackup 'ScreenCapture.exe') }
 if ($taskCapture -ne $taskNativeTarget) { Copy-Item -LiteralPath $taskCapture -Destination $taskNativeTarget -Force }
 if ((Get-FileHash -LiteralPath $taskCapture).Hash -ne (Get-FileHash -LiteralPath $taskNativeTarget).Hash) { throw 'Capture binary hash mismatch' }
@@ -68,7 +76,8 @@ $taskBinaryManifestPath = Join-Path $taskData 'binary-manifest.json'
 if (Test-Path -LiteralPath $taskBinaryManifestPath) {
     $taskBinaryManifest = Get-Content -LiteralPath $taskBinaryManifestPath -Raw | ConvertFrom-Json
     $taskBinaryManifest.capturedUtc = [DateTime]::UtcNow.ToString('o')
-    $taskBinaryManifest.files = @($taskBinaryManifest.files | Where-Object { $_.path -ne 'native\ScreenCapture.exe' }) + @(@{ path='native\ScreenCapture.exe'; sha256=(Get-FileHash -LiteralPath $taskNativeTarget).Hash })
+    $taskBinaryManifest.files = @($taskBinaryManifest.files | Where-Object { $_.path -ne 'native\ScreenCapture.exe' -and (-not $HidExecutable -or $_.path -ne 'native\HidTransport.exe') }) + @(@{ path='native\ScreenCapture.exe'; sha256=(Get-FileHash -LiteralPath $taskNativeTarget).Hash })
+    if($HidExecutable){$taskBinaryManifest.files += @(@{path='native\HidTransport.exe';sha256=(Get-FileHash -LiteralPath $taskConfig.nativeExecutable).Hash})}
     [IO.File]::WriteAllText($taskBinaryManifestPath, ($taskBinaryManifest | ConvertTo-Json -Depth 8), $taskEncoding)
 }
 # Registration path is unchanged. Preserve any operator stop; never call resume.
@@ -86,7 +95,7 @@ if (Test-Path -LiteralPath $taskVerificationPath) {
     $taskVerification = Get-Content -LiteralPath $taskVerificationPath -Raw | ConvertFrom-Json
     $taskVerification.version = $taskCandidateVersion; $taskVerification.updatedUtc = [DateTime]::UtcNow.ToString('o')
     $taskVerification.sourceFileCount = $taskFiles.Count
-    $taskVerification.javascriptTests = if ($taskCandidateVersion -eq '0.4.0') { 41 } else { 39 }
+    $taskVerification.javascriptTests = if ($taskCandidateVersion -eq '0.5.0') { 44 } elseif ($taskCandidateVersion -eq '0.4.0') { 41 } else { 39 }
     if ($taskVerification.mcp) { $taskVerification.mcp.toolCount = 11 }
     $taskVerification.sourceManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $taskData 'source-manifest.json')).Hash
     if ($taskVerification.availableUpdate) { $taskVerification.availableUpdate.activationPending = $false }

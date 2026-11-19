@@ -61,10 +61,16 @@ Screenshots are operational artifacts. status.json is the separate verification
 snapshot. Source, dependencies and setup live outside the operational data root.
 
 This version targets the physical console only. It does not implement RDP input,
-secure-desktop interaction, multi-monitor capture, an authenticated remote MCP
+multi-monitor capture, an authenticated remote MCP
 endpoint, or an audited Windows-user device ACL policy. Display
 variants, elevated apps, physical takeover and Driver Verifier remain acceptance
 work described in ACCEPTANCE.md.
+
+The optional 0.5.0 SYSTEM service and its physical-console helper implement a
+separate, bounded UAC path. The ordinary process retains audio, encoding, file
+writes and MCP leases; the service exports pixels and validates one-shot consent
+actions for staged executable hashes. It has no general elevated shell API.
+See [setup, scope and pending host acceptance](SECURE_DESKTOP.md).
 
 ## Screenshot and recording worker (0.3.0)
 

@@ -103,11 +103,17 @@ duration, timestamps, state and reason. Treat a file as ready only when
 `finalized=true`. Stop is idempotent after completion. On an abrupt process kill,
 OS failure or failed finalization, a partial file can remain unrecoverable.
 
-Disconnect, controller shutdown, emergency stop, lock/secure desktop, session
+Disconnect, controller shutdown, emergency stop, unsupported secure desktop, session
 change and display-dimension change stop the recording. Parent-pipe EOF also
 stops it, and loss of the capture worker's one-second controller heartbeat
 stops it after five seconds without a ping. These are separate from the HID
 watchdogs. No automatic resume, unlock, session transfer or input replay occurs.
+
+The optional 0.5.0 [secure desktop service](SECURE_DESKTOP.md) supplies fresh
+SYSTEM/GDI frames for actual Windows consent dialogs while encoding and audio
+remain in the ordinary recorder. Short source-transition gaps are black frames,
+not stale screenshots. Receipts count secure frames and desktop transitions.
+Installation and real UAC acceptance must be verified separately on each host.
 
 Keep output on the external operational disk/share. Files are not uploaded to
 GitHub. Product demos have cursor video and system audio when available, never

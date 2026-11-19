@@ -88,8 +88,12 @@ can inspect status or request the next lease. Input batches are serialized;
 emergency stop can interrupt a split batch between packets.
 
 Native heartbeat loss releases/stops at two seconds; the VHF watchdog is
-independent at three seconds. Session changes or non-Default input desktops
-stop the native helper and persist a fault. No automatic RDP/session transfer
+independent at three seconds. Session changes and unsupported input desktops
+stop the native helper and persist a fault. With the optional 0.5.0
+[UAC service](SECURE_DESKTOP.md), the normal writer pauses for real consent
+dialogs. Inspect a fresh UAC screenshot, expand its details if necessary and
+use an absolute left click. Yes is limited to administrator-staged path/hash
+permissions; credential entry and unknown programs are refused. No automatic RDP/session transfer
 is performed. Use the shared physical console and validate the chosen remote
 viewer separately.
 
