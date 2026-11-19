@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HidSession } from '../src/session.mjs';
 import { DesktopController } from '../src/controller.mjs';
+import { completedConsentRelease } from '../src/native-transport.mjs';
+
+test('a completed consent click consumes only its matching absolute button release', () => {
+  const click = Buffer.from([3, 1, 100, 0, 200, 0, 0]);
+  const up = Buffer.from([3, 0, 100, 0, 200, 0, 0]);
+  assert.equal(completedConsentRelease(click, up), true);
+  for (const report of [[3, 0, 101, 0, 200, 0, 0], [3, 0, 100, 0, 200, 0, 1], [3, 2, 100, 0, 200, 0, 0], [4, 0, 0, 0, 0], [7, 0, 0, 0, 0, 0, 0, 0, 0]]) {
+    assert.equal(completedConsentRelease(click, Buffer.from(report)), false);
+  }
+  assert.equal(completedConsentRelease(undefined, up), false);
+});
 
 test('a refused UAC application sends no fallback input and preserves the lease', async () => {
   let sends = 0, releases = 0;

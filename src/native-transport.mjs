@@ -7,10 +7,16 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { CaptureWorker } from './capture-worker.mjs';
 
+export function completedConsentRelease(previous, next) {
+  return Boolean(previous && previous[0] === 3 && previous[1] === 1 &&
+    next[0] === 3 && next[1] === 0 && next[6] === 0 &&
+    previous.subarray(2).equals(next.subarray(2)));
+}
+
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
   #captureWorker; #recordingListeners = new Set();
-  #securePrompt; #secureCapturedAt = 0; #inputDeadline; #secureInputPending = false;
+  #securePrompt; #secureCapturedAt = 0; #inputDeadline; #secureInputPending = false; #completedSecureClick;
   constructor(executable, { dataRoot, onFault = () => {} } = {}) {
     if (typeof executable !== 'string' || !executable) throw new TypeError('native executable path required');
     if (dataRoot && !path.isAbsolute(dataRoot)) throw new TypeError('capture dataRoot must be absolute');
@@ -96,7 +102,7 @@ export class NativeTransport {
   }
   setInputDeadline(deadline) { this.#inputDeadline = deadline; }
   cancelPendingUacInput() { if (this.#secureInputPending) this.#child.kill(); }
-  async releaseInput() { this.#securePrompt = undefined; return this.#request('release'); }
+  async releaseInput() { this.#securePrompt = undefined; this.#completedSecureClick = undefined; return this.#request('release'); }
   async #request(op, report, secure = false) {
     await this.#ready;
     if (this.#fatal) throw this.#fatal;
@@ -108,7 +114,19 @@ export class NativeTransport {
       this.#child.stdin.write(JSON.stringify({ id, op, ...(report ? { report } : {}), ...(secure ? { promptId: this.#securePrompt, deadlineUtcMs: Math.floor(Math.min(this.#inputDeadline ?? 0, this.#secureCapturedAt + 30000)) } : {}) }) + '\n');
     });
   }
-  async send(report) { const secure = Boolean(this.#securePrompt); this.#secureInputPending = secure; try { return await this.#request('send', validateReport(report).toString('hex'), secure); } finally { this.#secureInputPending = false; } }
+  async send(report) {
+    const validated = validateReport(report);
+    // A secure consent click already includes button-up. A matching caller
+    // release must not reuse its consumed prompt or move on the next desktop.
+    if (completedConsentRelease(this.#completedSecureClick, validated)) return this.releaseInput();
+    this.#completedSecureClick = undefined;
+    const secure = Boolean(this.#securePrompt); this.#secureInputPending = secure;
+    try {
+      const result = await this.#request('send', validated.toString('hex'), secure);
+      if (secure && result.secureDelegated === true && validated[0] === 3 && validated[1] === 1) this.#completedSecureClick = Buffer.from(validated);
+      return result;
+    } finally { this.#secureInputPending = false; }
+  }
   ping() { return this.#request('ping'); }
   async close() {
     this.#closing = true;
