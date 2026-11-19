@@ -1,5 +1,36 @@
 # Desktop acceptance
 
+## Individual keys and local timing, 0.6.0
+
+The JavaScript suite has 55 passing tests. The official MCP SDK discovers all
+fourteen tools and calls key down/up/press. Regression checks cover modifier
+composition, six-key rollover, invalid durations, insufficient lease time,
+cancellation, expiry, disconnect, explicit release and desktop transitions.
+The unchanged HID helper passes its eighteen native wire checks.
+
+The physical-console test used an independent foreground Raw Input receiver,
+filtered to this virtual HID device. Right Shift down/up were both observed.
+Timed F8 presses requested at 750 ms and 10000 ms were observed at 754.9 ms and
+10017.1 ms respectively, including the entire long hold without heartbeat loss.
+F8 was directed only to the empty receiver window. Timing is approximate.
+
+Reproduce with `scripts/Build-Observer.ps1`, then run
+`scripts/Test-KeyTiming.mjs --live ABS_HID_EXE ABS_OBSERVER_EXE ABS_DATA_ROOT`.
+Inspect the emitted receiver screenshot before sending `run` on stdin. This
+live script is excluded from ordinary tests and requires an idle controller.
+
+## Secure desktop, 0.5.0
+
+Actual consent screenshots, details expansion, the approved protected probe's
+elevated exit code 0, refusal of an identical probe at an unapproved path, wrong
+client rejection and expired screenshot refusal were verified. A ninety-second
+MP4 crossed Default/UAC/Default twice, contained system playback audio and fully
+decoded to 900 video frames plus 48-kHz stereo AAC. MCP emergency stop while UAC
+was active released the controller and finalized the recording. Both ordinary
+mouse collections worked again after returning to Default. The physical
+Ctrl+Alt+F12 chord on UAC still needs a manual test; see
+[secure desktop scope](SECURE_DESKTOP.md).
+
 ## System playback audio, 0.4.0
 
 The JavaScript suite has 41 passing tests, including default-enabled system
