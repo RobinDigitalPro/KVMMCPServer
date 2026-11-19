@@ -90,6 +90,13 @@ fall back to video-only recording with an explicit `audioStatus`/`audioReason`.
 An optional virtual audio output can provide a playback endpoint on a headless
 host. Third-party audio drivers are installed separately and are not bundled.
 
+For a physical Windows workstation used without an attached monitor, optional
+[Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)
+can supply a persistent virtual screen. If no playback output is available,
+[VB-CABLE](https://vb-audio.com/Cable/) can supply an optional audio endpoint.
+These are headless-host setup tips, not project dependencies: neither driver is
+bundled, forked or required by KVMMCPServer. VB-CABLE has its own license.
+
 ```powershell
 node src/manage.mjs status --data-root D:\AgentData\desktop-hid
 node src/manage.mjs emergency-stop --data-root D:\AgentData\desktop-hid
