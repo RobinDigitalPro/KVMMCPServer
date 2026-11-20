@@ -21,6 +21,14 @@ and refusal of oversized, unsupported and normalization-expanding input. All
 67 JavaScript/MCP regression tests passed. These tests do not claim that the
 receiving application consumed typed text; that is checked separately on-host.
 
+The on-host MCP test then typed the exact original 78-unit string into our own
+visually checked receiver with Belgian (Period), interval 15 ms. The receiver's
+actual text matched exactly. A 1025-unit request was refused with the field
+unchanged; a native unsupported-Unicode refusal also left it unchanged. A
+subsequent `MCP` typed successfully through the same live controller. Status
+confirmed helper connected, physical-console session matched, and no stop/fault.
+The failed text action was not replayed into its original application.
+
 ## Local operator UAC consent, service policy 0.8.0
 
 On 2026-11-20 the protected service was updated and its status reported
