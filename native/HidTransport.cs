@@ -229,9 +229,25 @@ namespace OpenDesktopHid
     internal static class Program
     {
         private const int WatchdogMs = 2000;
-        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 2048 };
+        private const int MaxRequestJsonChars = 8192;
+        // At most 1024 UTF-16 units -> 2048 physical strokes, including accents.
+        // Each bounded stroke object takes at most 27 JSON characters. The
+        // complete reply/context fits below 64 Ki characters (tested below).
+        private const int MaxResponseJsonChars = 65536;
+        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = MaxResponseJsonChars, RecursionLimit = 16 };
         private static readonly object OutputLock = new object();
         private static void Emit(object value) { lock (OutputLock) Console.WriteLine(Json.Serialize(value)); }
+        private static void EmitPlan(object value) {
+            lock(OutputLock) {
+                string payload;
+                // A serialization rejection here is before every text stroke.
+                // Console/transport write failures must still stop the helper.
+                try{payload=Json.Serialize(value);}
+                catch(InvalidOperationException){throw new SecurePolicyException("Text plan response exceeds its bounded JSON format; no text input sent");}
+                catch(ArgumentException){throw new SecurePolicyException("Text plan response cannot be serialized; no text input sent");}
+                Console.WriteLine(payload);
+            }
+        }
         private static bool Down(int key) { return (Native.GetAsyncKeyState(key) & 0x8000) != 0; }
         private static int Serve()
         {
@@ -287,8 +303,8 @@ namespace OpenDesktopHid
                                 string line;
                                 while ((line = Console.ReadLine()) != null)
                                 {
-                                    if (line.Length > 8192) throw new ArgumentException("Request too large");
-                                    Dictionary<string, object> req = new JavaScriptSerializer { MaxJsonLength = 8192 }.Deserialize<Dictionary<string, object>>(line);
+                                    if (line.Length > MaxRequestJsonChars) throw new ArgumentException("Request too large");
+                                    Dictionary<string, object> req = new JavaScriptSerializer { MaxJsonLength = MaxRequestJsonChars }.Deserialize<Dictionary<string, object>>(line);
                                     object id; if (!req.TryGetValue("id", out id)) throw new ArgumentException("Request id required");
                                     lock (gate)
                                     {
@@ -303,7 +319,7 @@ namespace OpenDesktopHid
                                             else if(op=="plan_text") {
                                                 if(paused)throw new SecurePolicyException("Text input is only available on the ordinary desktop");
                                                 var plan=KeyboardText.Plan(req.ContainsKey("text")?req["text"] as string:null,req.ContainsKey("layout")?req["layout"] as string:"active");
-                                                heartbeat.Restart();Emit(new{id=id,ok=true,plan=plan});continue;
+                                                heartbeat.Restart();EmitPlan(new{id=id,ok=true,plan=plan});continue;
                                             }
                                             else if(op=="send") {
                                                 byte[] report=Wire.Decode(req["report"] as string);heartbeat.Restart();
@@ -332,6 +348,16 @@ namespace OpenDesktopHid
         {
             int passed = 0;
             KeyboardText.SelfTest();passed++;
+            var maximumPlan=new TextPlan{strokes=Enumerable.Range(0,KeyboardText.MaxTextStrokes).Select(_=>new TextStroke{key=101,modifiers=66}).ToArray(),context=new TextContext{window=new string('f',16),foregroundLayout=new string('f',16),capsLock=false},mappingLayout=new string('f',16),characters=KeyboardText.MaxTextUnits};
+            string maximumReply=Json.Serialize(new{id=int.MaxValue,ok=true,inputSent=false,plan=maximumPlan});
+            if(maximumReply.Length>=MaxResponseJsonChars||maximumReply.Length<=2048)throw new Exception("Text plan response bound failed");
+            var roundtrip=Json.Deserialize<Dictionary<string,object>>(maximumReply);
+            if(roundtrip==null||!roundtrip.ContainsKey("plan"))throw new Exception("Text plan protocol roundtrip failed");
+            bool oldRejected=false;try{new JavaScriptSerializer{MaxJsonLength=2048}.Serialize(new{plan=maximumPlan});}catch(InvalidOperationException){oldRejected=true;}catch(ArgumentException){oldRejected=true;}
+            if(!oldRejected)throw new Exception("Text plan regression vector must exceed the previous JSON limit");
+            passed+=3;
+            bool oversizedRefused=false;try{EmitPlan(new{padding=new string('x',MaxResponseJsonChars)});}catch(SecurePolicyException){oversizedRefused=true;}
+            if(!oversizedRefused)throw new Exception("Oversized text plan must be refused before output");passed++;
             if (Marshal.SizeOf(typeof(Native.Caps)) != 64 || Marshal.SizeOf(typeof(Native.Attributes)) != 12 || Marshal.SizeOf(typeof(Native.InterfaceData)) != (IntPtr.Size == 8 ? 32 : 28)) throw new Exception("Windows interop structure size mismatch");
             passed++;
             if (!DesktopSession.MatchesConsole(1, 1) || DesktopSession.MatchesConsole(1, 2) || DesktopSession.MatchesConsole(1, uint.MaxValue)) throw new Exception("Console session guard failed");
@@ -351,7 +377,7 @@ namespace OpenDesktopHid
                 bool rejected = false; try { Wire.Decode(hex); } catch (Exception) { rejected = true; }
                 if (!rejected) throw new Exception("Invalid report accepted: " + hex); passed++;
             }
-            Emit(new { ok = true, checks = passed, inputSent = false }); return 0;
+            Emit(new { ok = true, checks = passed, maxTextReplyChars=maximumReply.Length, requestJsonLimit=MaxRequestJsonChars, responseJsonLimit=MaxResponseJsonChars, inputSent = false }); return 0;
         }
         private static int Main(string[] args)
         {
@@ -360,9 +386,9 @@ namespace OpenDesktopHid
                 Console.InputEncoding=new UTF8Encoding(false,true);Console.OutputEncoding=new UTF8Encoding(false);
                 if (args.Length == 1 && args[0] == "self-test") return SelfTest();
                 if(args.Length==1&&args[0]=="plan-text"){
-                    string input=Console.ReadLine();if(input==null||input.Length>8192)throw new ArgumentException("Expected bounded text/layout JSON on stdin");
-                    var request=new JavaScriptSerializer{MaxJsonLength=8192}.Deserialize<Dictionary<string,object>>(input);
-                    Emit(new{ok=true,inputSent=false,plan=KeyboardText.Plan(request["text"] as string,request.ContainsKey("layout")?request["layout"] as string:"active")});return 0;
+                    string input=Console.ReadLine();if(input==null||input.Length>MaxRequestJsonChars)throw new ArgumentException("Expected bounded text/layout JSON on stdin");
+                    var request=new JavaScriptSerializer{MaxJsonLength=MaxRequestJsonChars}.Deserialize<Dictionary<string,object>>(input);
+                    EmitPlan(new{ok=true,inputSent=false,plan=KeyboardText.Plan(request["text"] as string,request.ContainsKey("layout")?request["layout"] as string:"active")});return 0;
                 }
                 if (args.Length == 1 && args[0] == "probe")
                 {

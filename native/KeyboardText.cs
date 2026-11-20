@@ -11,6 +11,7 @@ namespace OpenDesktopHid {
     internal sealed class TextContext { public string window {get;set;} public string foregroundLayout {get;set;} public bool capsLock {get;set;} }
     internal sealed class TextPlan { public TextStroke[] strokes {get;set;} public TextContext context {get;set;} public string mappingLayout {get;set;} public int characters {get;set;} }
     internal static class KeyboardText {
+        internal const int MaxTextUnits=1024,MaxTextStrokes=2*MaxTextUnits;
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window,out uint pid);
         [DllImport("user32.dll")] private static extern IntPtr GetKeyboardLayout(uint thread);
@@ -63,7 +64,7 @@ namespace OpenDesktopHid {
         }
         private static char Accent(char mark){switch(mark){case '\u0300':return '`';case '\u0301':return '\u00b4';case '\u0302':return '^';case '\u0303':return '~';case '\u0308':return '\u00a8';case '\u030a':return '\u00b0';case '\u0327':return '\u00b8';default:return '\0';}}
         internal static TextPlan Plan(string text,string requested){
-            if(String.IsNullOrEmpty(text)||text.Length>1024)throw new SecurePolicyException("text must contain 1..1024 UTF-16 units");
+            if(String.IsNullOrEmpty(text)||text.Length>MaxTextUnits)throw new SecurePolicyException("text must contain 1..1024 UTF-16 units");
             if(text.Any(char.IsSurrogate))throw new SecurePolicyException("Supplementary or unpaired Unicode characters cannot be typed by this physical layout; no text input sent");
             TextContext context=Context();IntPtr layout=Layout(requested,context);
             // ImmIsIME also reports ordinary TSF-backed layouts as IMEs on modern Windows.
@@ -71,6 +72,7 @@ namespace OpenDesktopHid {
             if(!IsBaseLayout(unchecked((uint)layout.ToInt64()))||ImmGetIMEFileName(layout,null,0)!=0)throw new SecurePolicyException("IME composition layouts and layout variants are not supported for physical text planning");
             Dictionary<char,TextStroke> direct,dead;Tables(layout,context.capsLock,out direct,out dead);
             text=text.Replace("\r\n","\n").Replace('\r','\n').Normalize(NormalizationForm.FormC);
+            if(text.Length>MaxTextUnits)throw new SecurePolicyException("Normalized text exceeds 1024 UTF-16 units; no text input sent");
             var strokes=new List<TextStroke>();
             for(int index=0;index<text.Length;index++){
                 char value=text[index];TextStroke stroke;
@@ -83,6 +85,7 @@ namespace OpenDesktopHid {
                 }
                 throw new SecurePolicyException("Character U+"+((int)value).ToString("X4")+" at index "+index+" cannot be produced by this keyboard layout; no text input sent");
             }
+            if(strokes.Count>MaxTextStrokes)throw new SecurePolicyException("Text plan exceeds 2048 strokes; no text input sent");
             var after=Context();if(after.window!=context.window||after.foregroundLayout!=context.foregroundLayout||after.capsLock!=context.capsLock)throw new SecurePolicyException("Text input context changed during planning");
             return new TextPlan{strokes=strokes.ToArray(),context=context,mappingLayout=Hex(layout),characters=text.Length};
         }

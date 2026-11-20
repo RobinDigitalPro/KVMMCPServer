@@ -186,6 +186,12 @@ viewer separately.
 
 ## Monitoring and trust boundary
 
+Native 0.7.2 bounds text planning to 1024 normalized UTF-16 units and 2048
+physical strokes. The plan reply can take up to 64 Ki JSON characters; the
+request limit remains 8 Ki. If an older helper stops on `maxJsonLength`, preserve
+the desktop checkpoint and have the local operator update/review the helper
+before explicit Resume. Never replay the failed text action automatically.
+
 Read live-status.json for active owner/job, last action and native health.
 events.jsonl records action/result metadata without tokens or raw key contents.
 Captures are saved under captures/. MP4 recordings (maximum 600 seconds)

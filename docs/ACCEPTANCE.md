@@ -1,5 +1,26 @@
 # Desktop acceptance
 
+## Bounded native text-plan replies, 0.7.2
+
+A 78-unit string reproduced the old native JavaScriptSerializer exception without
+opening the HID device. Its actual live-protocol plan required 2111 JSON
+characters, beyond the former 2048-character response limit. Planning failed
+before the session could send its first text stroke; the resulting transport
+failure correctly latched the controller stop.
+
+The response limit is now 65536 JSON characters, with unchanged 8192-character
+requests. Native planning also enforces 1024 normalized UTF-16 units and at most
+2048 strokes. A synthetic worst-case full response takes 55510 characters. Plan
+serialization failures are classified before output as no-input refusals;
+unknown device/transport failures retain the existing stop behavior.
+
+The native self-test passed 23 checks, including the complete maximum reply,
+roundtrip and oversized-reply refusal. Seven read-only Windows planner cases
+passed: short/78-unit/1024-unit ASCII, 1024 accented characters (2048 strokes),
+and refusal of oversized, unsupported and normalization-expanding input. All
+67 JavaScript/MCP regression tests passed. These tests do not claim that the
+receiving application consumed typed text; that is checked separately on-host.
+
 ## Local operator UAC consent, service policy 0.8.0
 
 On 2026-11-20 the protected service was updated and its status reported

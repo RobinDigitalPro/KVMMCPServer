@@ -7,12 +7,16 @@ and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.7.1** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.7.2** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
 1920x1080 PNG. Client disconnect released held Shift within 34 ms in the first
 shared-controller live test. See [acceptance](docs/ACCEPTANCE.md).
+
+0.7.2 fixes a native text-plan JSON limit that could stop the controller for
+ordinary longer strings. Responses are bounded to 64 Ki characters for at most
+2048 strokes; input remains limited to 1024 UTF-16 units and 8 Ki request JSON.
 
 This is a development release of [KVMMCPServer](https://github.com/RobinDigitalPro/KVMMCPServer), using the OpenDesktopHID driver. No production-signed driver distribution is provided. Other displays/DPI and physical
 hotkey acceptance remain separate tests.
