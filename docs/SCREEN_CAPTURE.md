@@ -1,5 +1,25 @@
 # Screenshots and bounded screen recording
 
+Version 0.8.0 also provides an optional 30-second encoded RAM buffer. See
+[relative gestures and recent media](AGENT_USAGE.md#relative-gestures-and-recent-media)
+for all four tools, quality profiles and ownership rules. Recording starts stop
+the buffer first; the two modes never run together. Media now runs in an isolated
+Windows Job Object with CPU/private-memory ceilings. Existing recording options
+remain accepted, but resource pressure can interrupt an expensive recording and
+its result must always be checked for finalization/reason. Buffering on a secure
+desktop stops; explicit UAC screenshots/recording retain their existing path.
+
+Native buffer tests use synthetic pixels and audio without opening a desktop,
+speaker, microphone or HID device:
+
+```powershell
+node scripts/Test-MediaBuffer.mjs D:\Build\ScreenCapture.exe D:\AgentData\buffer-tests
+```
+
+This checks all nine mode/profile combinations, 35-second combined buffers,
+5/15/30-second exports, complete decoding, native history caps, and installed OS
+limits. It is separate from the fast ordinary JavaScript test suite.
+
 Version 0.4.0 uses a persistent, user-mode `ScreenCapture.exe` beside
 `HidTransport.exe`. Screenshots and H.264/MP4 recordings use the primary physical
 display. System playback audio is included by default when an active default
@@ -25,7 +45,7 @@ zero-copy GPU encoder. No proprietary capture SDK is bundled.
 Do not replace running executables or restart a controller that another agent is
 using. Stage a versioned build, arrange an idle checkpoint, close the controller
 normally, copy the reviewed executable and source, then start it again. Reload
-the MCP connection so its catalog contains seventeen tools. A running 0.2.0 adapter
+the MCP connection so its catalog contains twenty-three tools. A running older adapter
 or controller keeps its old code until restarted. Never clear an operator stop
 as part of an upgrade. See `hid_status.screenRecording` for availability.
 

@@ -1,5 +1,31 @@
 # Desktop acceptance
 
+## Relative gestures and recent-media buffer, 0.8.0
+
+The ordinary suite passes 82 JavaScript tests, including both gestures,
+cancellation/expiry/lost acknowledgements, buffer ownership/lifetime, serialized
+recording preemption, invalid requests, event delivery, queue capacity and
+disconnect cleanup. A failed media state leaves healthy input usable.
+
+The native capture executable builds with C++17 /W4 /WX. Five native history
+checks cover time eviction, 32 MiB encoded byte eviction, invalid timestamps,
+oversized packets and low-memory admission. Native synthetic acceptance passes
+all nine audio/video/combined and light/standard/high combinations. Combined
+buffers run 35 seconds each; 5/15/30-second exports and a running-buffer export
+are produced without re-encoding. Media Foundation independently decodes every
+export to end-of-stream. Video/combined have decodable H.264; audio/combined
+have 48 kHz stereo AAC; video-only has no audio.
+
+The worker reports OS CPU/private-commit limits active in every case. Synthetic
+combined private memory was approximately 77/91/119 MiB for light/standard/high;
+retained history stayed below 32 MiB and available history below 30 seconds.
+The high-profile 30-second request produced about 29.07 seconds after keyframe
+alignment. These are synthetic measurements, not GPU/build-load guarantees.
+Reproduce with scripts/Test-MediaBuffer.mjs and a new external output directory.
+
+Live host acceptance is performed separately after the main chat's explicit
+maintenance checkpoint. No HID kernel or SYSTEM UAC-service update is required.
+
 ## Bounded native text-plan replies, 0.7.2
 
 A 78-unit string reproduced the old native JavaScriptSerializer exception without

@@ -1,7 +1,30 @@
 # Local controller architecture
 
+Version 0.8.0 runs the media worker behind a small native guardian. The guardian
+launches only its own fixed worker executable, suspended, assigns a Windows Job
+Object, then resumes it. The job enforces 5% whole-system CPU, 512 MiB private
+commit, one process and kill-on-close. Only stdin/stdout/stderr handles are
+inherited. Killing/disconnecting the guardian terminates its encoder child.
+HID, controller and the optional SYSTEM UAC broker are outside this job.
+
+One Media Foundation sink-writer pipeline encodes optional audio/video into a
+custom fixed-stream, rate-less sink. Its interleaved history has hard packet,
+count, duration and byte caps. Export takes one immutable encoded snapshot and
+muxes it on one bounded thread, without another capture or encoder. There is no
+continuous disk buffer. One serialized controller media transition queue has
+four ordinary slots and reserved cleanup admission; broker connections are
+limited to 32 and each has at most 16 outstanding requests. The private native
+pipe has bounded input/output and at most eight pending requests in its JS
+adapter. Export cancellation disposes the media worker if necessary.
+
+A media-only process failure updates recording/buffer status and discards the
+worker without invoking the HID fault callback. The next screenshot may create
+a replacement media worker. Frozen in-memory history is lost on worker loss;
+status explicitly reports zero available history. HID transport failures retain
+the independent neutralization, watchdog and persistent-stop behavior below.
+
 The stdio adapter uses the official MCP SDK for message validation, tool schemas,
-protocol compatibility and cancellation. It forwards only the seventeen declared
+protocol compatibility and cancellation. It forwards only the twenty-three declared
 desktop tools to a shared local controller. No arbitrary command execution is
 accepted by that controller.
 
@@ -9,7 +32,7 @@ Each adapter has its own internal TCP connection and a server-issued random
 connection ID. A lease binds its opaque token to that connection. Human-readable
 agent, owner and job labels help monitoring; they do not establish identities or
 per-role permissions. All authorized local adapters currently have the same
-seventeen tools. Windows accounts and the agent's surrounding execution policy
+twenty-three tools. Windows accounts and the agent's surrounding execution policy
 remain the access boundaries.
 
 The controller binds an ephemeral port on 127.0.0.1 only. Its random 256-bit
@@ -69,7 +92,7 @@ work described in ACCEPTANCE.md.
 The optional 0.5.0 SYSTEM service and its physical-console helper implement a
 separate, bounded UAC path. The ordinary process retains audio, encoding, file
 writes and MCP leases; the service exports pixels and validates one-shot consent
-actions for staged executable hashes. It has no general elevated shell API.
+actions. It has no general elevated shell API.
 See [setup, scope and pending host acceptance](SECURE_DESKTOP.md).
 
 ## Screenshot and recording worker (0.3.0)

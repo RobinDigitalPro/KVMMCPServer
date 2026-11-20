@@ -38,6 +38,7 @@ export async function startBroker({ dataRoot, simulated = false, executable, tra
   try {
     controller = await DesktopController.create({ simulated, executable, dataRoot, store, transport });
     server = net.createServer(socket => {
+      if (sockets.size >= 32) { socket.destroy();return; }
       sockets.add(socket); socket.setNoDelay(true); socket.setEncoding('utf8');
       let client, buffer = '';
       const operations = new Map();

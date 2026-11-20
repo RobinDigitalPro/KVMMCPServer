@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { HidSession } from './session.mjs';
 import { NativeTransport } from './native-transport.mjs';
 import { parseTool } from './tools.mjs';
+import { MediaBuffer } from './media-buffer.mjs';
 
 const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 export class DesktopController {
   #session; #transport; #store; #simulated; #stopped; #owner; #clients = new Map(); #captures = new Map(); #lastAction; #timer; #heartbeat; #closing = false; #stopPromise; #reports = 0;
   #recording; #recordingCleanup;
+  #buffer; #mediaTail = Promise.resolve(); #mediaPending = 0;
   constructor({ transport, simulated, store, stopped }) {
     this.#transport = transport; this.#simulated = simulated; this.#store = store; this.#stopped = stopped;
     if (transport) this.#session = new HidSession(transport);
@@ -19,6 +21,7 @@ export class DesktopController {
       controller.#transport = transport ?? (simulated ? { send: async () => { controller.#reports++; } } : new NativeTransport(executable, { dataRoot, onFault: error => { void controller.stop(error.message).catch(() => {}); } }));
       controller.#session = new HidSession(controller.#transport);
       await controller.#transport.ready?.();
+      controller.#buffer = new MediaBuffer(controller.#transport, metadata => { void controller.publish({ event: 'buffer_state', bufferId: metadata.bufferId, state: metadata.state, reason: metadata.reason }).catch(() => {}); });
       controller.#recordingCleanup = controller.#transport.onRecording?.(metadata => {
         if (controller.#recording?.recordingId === metadata.recordingId) {
           controller.#recording = { ...controller.#recording, ...metadata };
@@ -55,16 +58,18 @@ export class DesktopController {
       await this.#session.release(token).catch(() => {});
     }
     // Recording finalization must never prevent neutral input on disconnect.
-    if (this.#recording?.clientId === client) await this.#stopRecording('agent_disconnected').catch(() => {});
+    await this.#media(async () => {
+      await Promise.allSettled([this.#recording?.clientId === client ? this.#stopRecording('agent_disconnected') : undefined, this.#buffer?.detach(client)]);
+    }, true).catch(() => {});
     await this.publish({ event: 'agent_disconnected' });
   }
   status() {
     const native = this.#transport?.status?.();
     const control = this.#session?.status() ?? { owner: null, leaseRemainingMs: 0, operatorStopped: this.#stopped.stopped, faulted: false };
-    return { version: '0.7.2', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
+    return { version: '0.8.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
       control: { ...control, operatorStopped: this.#stopped.stopped || (!this.#closing && control.operatorStopped), jobId: control.owner ? this.#owner?.jobId ?? null : null, clientId: control.owner ? this.#owner?.client ?? null : null },
       operatorStop: this.#stopped, clients: this.#clients.size, activeCaptures: this.#captures.size, lastAction: this.#lastAction ?? null,
-      screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
+      screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, mediaBuffer: this.#buffer?.status() ?? { state: 'idle' }, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
   }
   publish(event) { return this.#store?.publish(this.status(), event) ?? Promise.resolve(); }
   async stop(reason = 'operator_request') {
@@ -76,7 +81,7 @@ export class DesktopController {
     // emergencyStop marks the session synchronously, interrupting split input.
     const release = this.#session?.emergencyStop() ?? Promise.resolve();
     this.#stopPromise = (async () => {
-      const outcomes = await Promise.allSettled([this.#store?.persistStop(this.#stopped.reason), release, this.#stopRecording(this.#stopped.reason)]);
+      const outcomes = await Promise.allSettled([this.#store?.persistStop(this.#stopped.reason), release, this.#media(async () => { await Promise.allSettled([this.#stopRecording(this.#stopped.reason), this.#buffer?.stop('operator_stop')]); }, true)]);
       this.#owner = undefined;
       await this.publish({ event: 'operator_stop', reason: this.#stopped.reason, released: outcomes[1].status === 'fulfilled' });
       if (outcomes[0].status === 'rejected') throw outcomes[0].reason;
@@ -85,7 +90,20 @@ export class DesktopController {
     })();
     return this.#stopPromise;
   }
-  async call(client, name, rawArgs = {}, { signal } = {}) {
+  #media(action, cleanup = false) {
+    // Cleanup has reserved admission; a full ordinary queue cannot strand media.
+    if (this.#mediaPending >= 4 && !cleanup) return Promise.reject(new Error('Media transition queue is full'));
+    this.#mediaPending++;
+    const pending = this.#mediaTail.then(action);
+    this.#mediaTail = pending.catch(() => {}).finally(() => { this.#mediaPending--; });return pending;
+  }
+  async call(client, name, rawArgs = {}, context = {}) {
+    const response = await this.#call(client, name, rawArgs, context);
+    const events = this.#buffer?.events(client);
+    if (events?.length) response.content.push({ type: 'text', text: JSON.stringify({ mediaBufferEvents: events }) });
+    return response;
+  }
+  async #call(client, name, rawArgs = {}, { signal } = {}) {
     let action, cancelUac;
     try {
       if (!this.#clients.has(client)) throw new Error('Unknown local connection');
@@ -94,8 +112,16 @@ export class DesktopController {
       if (name === 'hid_emergency_stop') { await this.stop(); return result({ ok: true, operatorStopped: true, persisted: Boolean(this.#store), simulated: this.#simulated }); }
       if (name === 'screen_record_status' || name === 'screen_record_stop') {
         if (this.#recording?.clientId !== client || this.#recording.recordingId !== args.recordingId) throw new Error('Recording belongs to another connection or is unknown');
-        if (name === 'screen_record_stop') await this.#stopRecording('requested');
+        if (name === 'screen_record_stop') await this.#media(() => this.#stopRecording('requested'));
         return result(this.#recording);
+      }
+      if (['media_buffer_status','media_buffer_stop','media_buffer_export'].includes(name)) {
+        return result(await this.#media(async () => {
+          if (!this.#clients.has(client)) throw new Error('Connection closed');
+          if (!this.#buffer) throw new Error('Buffer is unknown');
+          if (name === 'media_buffer_export' && ['starting','recording','stopping'].includes(this.#recording?.state)) throw new Error('MEDIA_BUSY: recording is active');
+          return this.#buffer?.call(client, name, args, { signal });
+        }));
       }
       if (this.#closing || this.#stopped.stopped) throw new Error('Operator stopped this controller; explicit local operator resume required');
       signal?.throwIfAborted();
@@ -133,9 +159,21 @@ export class DesktopController {
           response = { content: [{ type: 'text', text: JSON.stringify(metadata) }, { type: 'image', mimeType: metadata.mimeType ?? 'image/png', data }] };
           action.frameId = metadata.frameId;
         } finally { this.#captures.delete(action.id); }
+      } else if (name === 'media_buffer_start') {
+        response = result(await this.#media(async () => {
+          signal?.throwIfAborted();await this.#session.assertLease(args.token);
+          if (this.#stopped.stopped || this.#closing || !this.#clients.has(client)) throw new Error('Buffer startup cancelled');
+          if (['starting','recording','stopping'].includes(this.#recording?.state)) throw new Error('MEDIA_BUSY: recording is active');
+          const { token, ...options } = args;
+          return this.#buffer.start(client, { owner: action.owner, jobId: action.jobId }, options, () => !signal?.aborted && !this.#stopped.stopped && !this.#closing && this.#clients.has(client));
+        }));
       } else if (name === 'screen_record_start') {
+        response = await this.#media(async () => {
+        signal?.throwIfAborted();await this.#session.assertLease(args.token);
+        if (this.#stopped.stopped || this.#closing || !this.#clients.has(client)) throw new Error('Recording startup cancelled');
         if (this.#simulated || !this.#transport.recordingAvailable) throw new Error('Screen recording unavailable; install ScreenCapture.exe');
         if (['starting', 'recording', 'stopping'].includes(this.#recording?.state)) throw new Error('A recording is already active');
+        await this.#buffer?.stop('recording_started');
         const { token, ...options } = args;
         options.systemAudio ??= true;
         const recordingId = randomUUID();
@@ -147,17 +185,18 @@ export class DesktopController {
             await this.#stopRecording('start_cancelled'); throw new Error('Recording start cancelled');
           }
           // Input lease expiry does not shorten the separately authorized recording.
-          response = result(this.#recording);
+          return result(this.#recording);
         } catch (error) {
           if (this.#recording?.recordingId === recordingId && this.#recording.state === 'starting') this.#recording = { ...this.#recording, state: 'failed', error: error.message };
           throw error;
         }
+        });
       } else if (name === 'hid_release') {
         this.#transport?.cancelPendingUacInput?.();
         await this.#session.release(args.token); this.#owner = undefined;
       } else {
         const { token, ...options } = args;
-        const method = { hid_mouse_relative: 'moveRelative', hid_mouse_absolute: 'moveAbsolute', hid_keyboard: 'keyboard', hid_key_down: 'keyDown', hid_key_up: 'keyUp', hid_key_press: 'keyPress', hid_key_chord: 'keyChord', hid_type_text: 'typeText', hid_click: 'click' }[name];
+        const method = { hid_mouse_relative: 'moveRelative', hid_mouse_absolute: 'moveAbsolute', hid_keyboard: 'keyboard', hid_key_down: 'keyDown', hid_key_up: 'keyUp', hid_key_press: 'keyPress', hid_key_chord: 'keyChord', hid_type_text: 'typeText', hid_click: 'click', hid_move_click_relative: 'moveClickRelative', hid_drag_relative: 'dragRelative' }[name];
         const details = await this.#session[method](token, options, { signal });
         if (details) response = result({ ok: true, simulated: this.#simulated, inputSent: !this.#simulated, ...details });
       }
@@ -193,9 +232,10 @@ export class DesktopController {
     this.#closing = true; clearInterval(this.#timer); clearInterval(this.#heartbeat);
     for (const capture of this.#captures.values()) capture.abort.abort(new Error('Controller shutting down'));
     await this.#session?.emergencyStop().catch(() => {});
-    await this.#stopRecording('controller_shutdown').catch(() => {});
+    await this.#media(async () => { await Promise.allSettled([this.#stopRecording('controller_shutdown'),this.#buffer?.stop('operator_stop')]); }, true).catch(() => {});
     await this.#transport?.close?.().catch(() => {});
     this.#recordingCleanup?.();
+    this.#buffer?.close();
     await this.publish({ event: 'controller_stopped' }); await this.#store?.flush();
   }
 }

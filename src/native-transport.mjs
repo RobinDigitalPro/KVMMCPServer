@@ -25,7 +25,7 @@ export function secureInputDeadline(leaseDeadline, capturedAt, now = Date.now())
 
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
-  #captureWorker; #recordingListeners = new Set(); #inputResetEpoch = 0; #textContext;
+  #captureWorker; #recordingListeners = new Set(); #bufferListeners = new Set(); #mediaError; #inputResetEpoch = 0; #textContext;
   #securePrompt; #secureCapturedAt = 0; #inputDeadline; #secureInputPending = false; #completedSecureClick;
   constructor(executable, { dataRoot, onFault = () => {} } = {}) {
     if (typeof executable !== 'string' || !executable) throw new TypeError('native executable path required');
@@ -66,20 +66,29 @@ export class NativeTransport {
     const timer = setTimeout(() => this.#fail(new Error('native startup timed out')), 10000);
     try { return await this.#ready; } finally { clearTimeout(timer); }
   }
-  status() { return { connected: Boolean(this.#metadata) && !this.#fatal && this.#child.exitCode === null, ...this.#metadata, inputResetEpoch: this.#inputResetEpoch, ...(this.#fatal ? { error: this.#fatal.message } : {}) }; }
+  status() { return { connected: Boolean(this.#metadata) && !this.#fatal && this.#child.exitCode === null, ...this.#metadata, inputResetEpoch: this.#inputResetEpoch, ...(this.#fatal ? { error: this.#fatal.message } : {}), ...(this.#mediaError ? { mediaError: this.#mediaError } : {}) }; }
   get captureAvailable() { return Boolean(this.#dataRoot); }
   get recordingAvailable() { return Boolean(this.#dataRoot && existsSync(path.join(path.dirname(this.#executable), 'ScreenCapture.exe'))); }
   #screen() {
     if (this.#fatal || this.#closing) throw this.#fatal ?? new Error('Native transport is closed');
     if (!this.recordingAvailable) throw new Error('Build/install ScreenCapture.exe beside HidTransport.exe to enable recording');
     if (!this.#captureWorker) {
-      this.#captureWorker = new CaptureWorker(path.join(path.dirname(this.#executable), 'ScreenCapture.exe'), this.#dataRoot);
-      this.#captureWorker.on('fault', error => { if (!this.#closing) this.#onFault(error); });
-      this.#captureWorker.on('recording', metadata => { for (const listener of this.#recordingListeners) listener(metadata); });
+      const worker = new CaptureWorker(path.join(path.dirname(this.#executable), 'ScreenCapture.exe'), this.#dataRoot);
+      this.#captureWorker = worker;this.#mediaError = undefined;
+      // Media has its own disposable, OS-limited process. Its failure must not
+      // poison the HID transport or persist a global operator stop.
+      worker.on('fault', error => { this.#mediaError = error.message.slice(0,300);if (this.#captureWorker === worker) this.#captureWorker = undefined; });
+      worker.on('recording', metadata => { for (const listener of this.#recordingListeners) listener(metadata); });
+      worker.on('buffer', metadata => { for (const listener of this.#bufferListeners) listener(metadata); });
     }
     return this.#captureWorker;
   }
   onRecording(listener) { this.#recordingListeners.add(listener); return () => this.#recordingListeners.delete(listener); }
+  onBuffer(listener) { this.#bufferListeners.add(listener); return () => this.#bufferListeners.delete(listener); }
+  startBuffer(options) { return this.#screen().startBuffer(options); }
+  bufferStatus() { return this.#captureWorker?.bufferStatus() ?? Promise.resolve(null); }
+  stopBuffer(reason) { return this.#captureWorker?.stopBuffer(reason) ?? Promise.resolve(null); }
+  exportBuffer(options) { if (!this.#captureWorker) throw new Error('Buffer worker is unavailable');return this.#captureWorker.exportBuffer(options); }
   startRecording(options) { return this.#screen().startRecording(options); }
   stopRecording() { return this.#captureWorker?.stopRecording() ?? Promise.resolve(null); }
   async capture({ signal, ...options } = {}) {

@@ -7,14 +7,19 @@ and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.7.2** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.8.0** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
 1920x1080 PNG. Client disconnect released held Shift within 34 ms in the first
 shared-controller live test. See [acceptance](docs/ACCEPTANCE.md).
 
-0.7.2 fixes a native text-plan JSON limit that could stop the controller for
+0.8.0 adds locally timed relative move-click/drag and one optional recent-media
+buffer with audio, video or combined output. Recording stops buffering first.
+Three fixed profiles and an isolated, OS-limited media process bound resource
+use. See [buffer and gesture use](docs/AGENT_USAGE.md#relative-gestures-and-recent-media).
+
+The earlier 0.7.2 fix corrects a native text-plan JSON limit that could stop the controller for
 ordinary longer strings. Responses are bounded to 64 Ki characters for at most
 2048 strokes; input remains limited to 1024 UTF-16 units and 8 Ki request JSON.
 
@@ -28,7 +33,7 @@ any program; there is no separate executable allowlist. Agent authorization for
 the requested host change is still required. See
 [secure desktop setup and limits](docs/SECURE_DESKTOP.md).
 
-The seventeen tools also include `hid_key_down`, `hid_key_up` and
+The twenty-three tools also include `hid_key_down`, `hid_key_up` and
 `hid_key_press(durationMs)`. Physical key usages include modifiers (224..231).
 Timed presses run locally for 1..10000 ms, preserve other held keys and release
 on cancellation, disconnect, desktop transition or lease expiry. See
@@ -70,7 +75,7 @@ No ordinary test injects desktop input. Operational data belongs outside source:
 .\scripts\Test-Local.ps1 -DataRoot D:\AgentData\desktop-hid -Function all
 ```
 
-The short suite has 67 JavaScript tests and 19 native HID checks. Stop the live
+The short suite has 82 JavaScript tests and 23 native HID checks. Stop the live
 controller before rebuilding its executable. The driver has a separate portable
 C contract (12 checks), package-validation tests (four cases), and explicit live
 acceptance scripts. Live scripts are never included in the ordinary suite.
@@ -93,9 +98,12 @@ never retried; inspect a fresh frame and acquire a new lease. A new native helpe
 waits 3.5 seconds under its mutex before heartbeats, allowing the installed
 driver's three-second watchdog to clear stale state from a previous helper.
 
-Eleven tools: `hid_status`, `hid_capture`, `hid_acquire`, `hid_mouse_relative`,
+Tools: `hid_status`, `hid_capture`, `hid_acquire`, `hid_mouse_relative`,
 `hid_mouse_absolute`, `hid_keyboard`, `hid_release`, `hid_emergency_stop`,
-`screen_record_start`, `screen_record_status`, `screen_record_stop`.
+`screen_record_start`, `screen_record_status`, `screen_record_stop`,
+`hid_key_down`, `hid_key_up`, `hid_key_press`, `hid_key_chord`, `hid_type_text`,
+`hid_click`, `hid_move_click_relative`, `hid_drag_relative`, `media_buffer_start`,
+`media_buffer_status`, `media_buffer_stop`, `media_buffer_export`.
 Capture and input require the acquiring connection's token. The owner/job labels
 are descriptive; the controller assigns the connection identity.
 

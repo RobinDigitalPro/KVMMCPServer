@@ -179,6 +179,59 @@ export class HidSession {
       });
     });
   }
+  #relativeGesture(button) {
+    if (!['left', 'right', 'middle'].includes(button)) throw new RangeError('button must be left, right or middle');
+    const native = this.#transport.status?.() ?? {};
+    if (native.inputPaused || native.desktop === 'Winlogon') {
+      const error = new Error('Relative gestures require the ordinary desktop'); error.policyRefusal = true; throw error;
+    }
+    const epoch = native.inputResetEpoch ?? 0;
+    if (epoch !== this.#mouseEpoch) { this.#mouseButtons = 0; this.#mouseEpoch = epoch; }
+    if (this.#mouseButtons) throw new Error('Release held mouse buttons before a relative gesture');
+    return { epoch, mask: { left: 1, right: 2, middle: 4 }[button] };
+  }
+  moveClickRelative(token, { dx = 0, dy = 0, button = 'left', pauseMs = 50, durationMs = 80 }, { signal } = {}) {
+    return this.#queue(async () => {
+      await this.#check(token);
+      if (!Number.isInteger(pauseMs) || pauseMs < 0 || pauseMs > 1000 || !Number.isInteger(durationMs) || durationMs < 1 || durationMs > 1000) throw new RangeError('pauseMs must be 0..1000; durationMs 1..1000');
+      const moves = relativeReports({ dx, dy });
+      const { epoch, mask } = this.#relativeGesture(button);
+      this.#requireTime(pauseMs + durationMs + moves.length * 2);
+      return this.#atomic(token, signal, async combined => {
+        const started = performance.now();
+        await this.#send(moves, combined);
+        await this.#wait(token, pauseMs, combined, epoch);
+        await this.#send(relativeReports({ buttons: mask }), combined); this.#mouseButtons = mask;
+        await this.#wait(token, durationMs, combined, epoch);
+        await this.#send(relativeReports(), combined); this.#mouseButtons = 0;
+        return { dx, dy, button, pauseMs, durationMs, elapsedMs: Math.round((performance.now() - started) * 100) / 100, released: true };
+      }, 5000);
+    });
+  }
+  dragRelative(token, { dx = 0, dy = 0, button = 'left', durationMs = 500, holdMs = 50 }, { signal } = {}) {
+    return this.#queue(async () => {
+      await this.#check(token);
+      if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 5000 || !Number.isInteger(holdMs) || holdMs < 0 || holdMs > 1000) throw new RangeError('durationMs must be 1..5000; holdMs 0..1000');
+      relativeReports({ dx, dy }); // Full displacement validation before button-down.
+      const { epoch, mask } = this.#relativeGesture(button);
+      const steps = Math.max(1, Math.ceil(durationMs / 20), Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 127));
+      this.#requireTime(durationMs + holdMs + steps * 2);
+      return this.#atomic(token, signal, async combined => {
+        const started = performance.now();
+        await this.#send(relativeReports({ buttons: mask }), combined); this.#mouseButtons = mask;
+        await this.#wait(token, holdMs, combined, epoch);
+        const begin = this.#clock(); let previousX = 0, previousY = 0;
+        for (let step = 1; step <= steps; step++) {
+          const x = Math.round(dx * step / steps), y = Math.round(dy * step / steps);
+          await this.#send(relativeReports({ dx: x - previousX, dy: y - previousY, buttons: mask }), combined);
+          previousX = x; previousY = y;
+          await this.#wait(token, Math.max(0, begin + durationMs * step / steps - this.#clock()), combined, epoch);
+        }
+        await this.#send(relativeReports(), combined); this.#mouseButtons = 0;
+        return { dx, dy, button, durationMs, holdMs, steps, elapsedMs: Math.round((performance.now() - started) * 100) / 100, released: true };
+      }, 6500);
+    });
+  }
   typeText(token, { text, layout = 'active', intervalMs = 10 }, { signal } = {}) {
     return this.#queue(async () => {
       await this.#check(token);

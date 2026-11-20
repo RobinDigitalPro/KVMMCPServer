@@ -23,6 +23,9 @@
 #include <mferror.h>
 #include <mmsystem.h>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <atomic>
 
 using Microsoft::WRL::ComPtr;
 using Clock = std::chrono::steady_clock;
@@ -46,7 +49,7 @@ static std::string Json(const std::string& value) {
     }
     out << '"'; return out.str();
 }
-static void Emit(const std::string& value) { std::cout << value << std::endl; }
+static void Emit(const std::string& value) { static std::mutex gate;std::lock_guard<std::mutex> lock(gate);std::cout << value << std::endl; }
 static std::string Utc() {
     SYSTEMTIME now; GetSystemTime(&now); char text[40];
     sprintf_s(text, "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds); return text;
@@ -124,6 +127,7 @@ public:
                 if (info.LastMouseUpdateTime.QuadPart != 0) separatePointer = info.PointerPosition.Visible != FALSE;
                 ComPtr<ID3D11Texture2D> texture; Check(resource.As(&texture), "desktop texture");
                 D3D11_TEXTURE2D_DESC desc; texture->GetDesc(&desc);
+                if(!desc.Width||!desc.Height||static_cast<UINT64>(desc.Width)*desc.Height>33554432)throw std::runtime_error("source_display_pixel_limit");
                 DXGI_OUTDUPL_DESC outputDesc; duplication->GetDesc(&outputDesc);
                 if (outputDesc.Rotation != DXGI_MODE_ROTATION_IDENTITY && outputDesc.Rotation != DXGI_MODE_ROTATION_UNSPECIFIED) throw std::runtime_error("rotated_display_not_supported");
                 if (!staging || cached.width != desc.Width || cached.height != desc.Height) {
@@ -337,7 +341,82 @@ public:
     }
 };
 
+#include "RecentMedia.h"
+#include "MediaGuard.h"
+
+static Frame BufferFrame(Capture& capture,const Frame& source,const BufferProfile& profile){
+    // Fit both dimensions, including portrait displays; never upscale.
+    const UINT width=std::min(profile.width,static_cast<UINT>(static_cast<UINT64>(profile.width*9/16)*source.width/source.height));
+    return capture.Scale(source,std::max<UINT>(2,width),true);
+}
+class RecentExport {
+    std::thread worker;std::atomic<bool> busy{false},cancelled{false};
+public:
+    ~RecentExport(){cancelled=true;if(worker.joinable())worker.join();}
+    bool Busy()const{return busy;}
+    void Start(RecentSnapshot snapshot,const fs::path& root,const std::string& identity,const std::string& bufferId,int request){
+        if(busy)throw std::runtime_error("export_busy");if(worker.joinable())worker.join();Identifier(identity);
+        const fs::path folder=root/L"media";fs::create_directories(folder);const std::string extension=snapshot.video?".mp4":".m4a";
+        const fs::path final=folder/fs::u8path(identity+extension),partial=folder/fs::u8path(identity+".partial"+extension);
+        if(fs::exists(final)||fs::exists(partial))throw std::runtime_error("output_already_exists");
+        if(snapshot.packets.empty())throw std::runtime_error("buffer_not_ready");busy=true;cancelled=false;
+        try{worker=std::thread([this,snapshot=std::move(snapshot),partial,final,identity,bufferId,request](){
+            const HRESULT initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
+            try{
+                Check(initialized,"export COM");RecentMedia::Export(snapshot,partial,&cancelled);
+                if(cancelled)throw std::runtime_error("export_cancelled");fs::rename(partial,final);
+                Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,\"exportId\":"+Json(identity)+",\"bufferId\":"+Json(bufferId)+",\"path\":"+Json(final.u8string())+",\"mimeType\":"+Json(snapshot.video?"video/mp4":"audio/mp4")+",\"actualSeconds\":"+std::to_string(static_cast<double>(snapshot.end-snapshot.begin)/10000000)+",\"bytes\":"+std::to_string(fs::file_size(final))+",\"reencoded\":false,\"microphone\":false}");
+            }catch(const std::exception& error){std::error_code ignored;fs::remove(partial,ignored);Emit("{\"id\":"+std::to_string(request)+",\"ok\":false,\"error\":"+Json(error.what())+"}");}
+            if(SUCCEEDED(initialized))CoUninitialize();busy=false;
+        });}catch(...){busy=false;throw;}
+    }
+    void Cancel(){cancelled=true;}
+};
+
 int wmain(int argc, wchar_t** argv) {
+    if(argc==2&&std::wstring(argv[1])==L"self-test-history"){
+        try{
+            Check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"COM");Check(MFStartup(MF_VERSION),"Media Foundation");
+            const auto packet=[](LONGLONG time,DWORD size){ComPtr<IMFSample> sample;Check(MFCreateSample(&sample),"test sample");ComPtr<IMFMediaBuffer> data;Check(MFCreateMemoryBuffer(size,&data),"test buffer");Check(data->SetCurrentLength(size),"test size");Check(sample->AddBuffer(data.Get()),"test payload");Check(sample->SetSampleTime(time),"test timestamp");Check(sample->SetSampleDuration(100000),"test duration");return sample;};
+            EncodedHistory age(false,true);for(int n=0;n<40;n++)Check(age.Push(false,packet(static_cast<LONGLONG>(n)*10000000,4).Get()),"age insertion");
+            const auto window=age.Snapshot(30);if(window.end-window.begin>EncodedHistory::Window||window.begin<90000000)throw std::runtime_error("age_eviction_failed");
+            EncodedHistory bytes(false,true);for(int n=0;n<36;n++)Check(bytes.Push(false,packet(n*100000,1024*1024).Get()),"byte insertion");
+            if(bytes.Bytes()>EncodedHistory::MaximumBytes||bytes.Bytes()!=32ULL*1024*1024)throw std::runtime_error("byte_eviction_failed");
+            EncodedHistory bad(false,true);if(SUCCEEDED(bad.Push(false,packet(-1,1).Get())))throw std::runtime_error("timestamp_guard_failed");
+            EncodedHistory large(false,true);if(SUCCEEDED(large.Push(false,packet(0,EncodedHistory::MaximumPacket+1).Get())))throw std::runtime_error("packet_guard_failed");
+            if(MediaBudget::MemoryAdmitted(128ULL*1024*1024)||!MediaBudget::MemoryAdmitted(1024ULL*1024*1024))throw std::runtime_error("memory_admission_guard_failed");
+            Emit("{\"ok\":true,\"checks\":5,\"inputSent\":false,\"captureOpened\":false,\"byteCap\":33554432,\"maxSeconds\":30}");return 0;
+        }catch(const std::exception& error){Emit("{\"ok\":false,\"error\":"+Json(error.what())+"}");return 1;}
+    }
+    if(argc==7&&std::wstring(argv[1])==L"guarded-self-test-buffer"&&std::wstring(argv[2])==L"--data-root"){
+        try{
+            const std::wstring mode=argv[4],profile=argv[5];if(mode!=L"audio"&&mode!=L"video"&&mode!=L"combined")throw std::runtime_error("invalid_buffer_mode");RecentProfile(Utf8(profile));const int seconds=Number(Utf8(argv[6]),4,40);
+            return GuardMediaWorker(fs::path(argv[3]),L" "+mode+L" "+profile+L" "+std::to_wstring(seconds));
+        }catch(const std::exception& error){Emit("{\"ok\":false,\"error\":"+Json(error.what())+"}");return 1;}
+    }
+    if(argc==4&&std::wstring(argv[1])==L"guarded-serve"&&std::wstring(argv[2])==L"--data-root"){
+        try{return GuardMediaWorker(fs::path(argv[3]));}catch(const std::exception& error){Emit("{\"type\":\"fatal\",\"error\":"+Json(error.what())+"}");return 1;}
+    }
+    if((argc==4||argc==6)&&std::wstring(argv[1])==L"self-test-buffer"){
+        try{
+            const fs::path root=argv[2];if(!root.is_absolute())throw std::runtime_error("absolute_test_root_required");fs::create_directories(root);
+            Check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"COM");Check(MFStartup(MF_VERSION),"Media Foundation");
+            const std::string mode=Utf8(argv[3]),profile=argc==6?Utf8(argv[4]):"light";const int seconds=argc==6?Number(Utf8(argv[5]),4,40):4;
+            RecentMedia recent(std::make_unique<SyntheticSystemAudio>());MediaBudget budget;const auto settings=RecentProfile(profile);Frame first;first.width=settings.width;first.height=settings.width*9/16;first.pixels.resize(static_cast<size_t>(first.width)*first.height*4,128);
+            recent.Begin("00000000-0000-4000-8000-000000000001",mode,profile,first);
+            while(recent.Elapsed()<static_cast<LONGLONG>(seconds)*10000000){
+                Sleep(5);budget.CheckUsage();recent.PumpAudio();
+                if(mode!="audio"&&Clock::now()>=recent.next){for(size_t index=0;index<first.pixels.size();index+=4096)first.pixels[index]=static_cast<BYTE>(recent.frames%255);recent.WriteVideo(first,recent.Elapsed());recent.next=Clock::now()+std::chrono::microseconds(1000000/settings.fps);}
+            }
+            const auto live=recent.history->Snapshot(std::min(15,seconds));const fs::path liveOutput=root/(mode=="audio"?L"live.m4a":L"live.mp4");if(fs::exists(liveOutput))throw std::runtime_error("test_output_exists");RecentMedia::Export(live,liveOutput);
+            recent.Stop("diagnostic_complete");
+            for(const int duration:{5,15,30}){
+                const auto snapshot=recent.history->Snapshot(duration);const fs::path output=root/fs::u8path(std::to_string(duration)+(mode=="audio"?".m4a":".mp4"));if(fs::exists(output))throw std::runtime_error("test_output_exists");RecentMedia::Export(snapshot,output);
+                Emit("{\"ok\":true,\"synthetic\":true,\"inputSent\":false,\"requestedSeconds\":"+std::to_string(duration)+",\"actualSeconds\":"+std::to_string(static_cast<double>(snapshot.end-snapshot.begin)/10000000)+",\"exportPath\":"+Json(output.u8string())+",\"exportBytes\":"+std::to_string(fs::file_size(output))+","+recent.Status()+","+budget.Status()+"}");
+            }
+            return 0;
+        }catch(const std::exception& error){Emit("{\"ok\":false,\"error\":"+Json(error.what())+"}");return 1;}
+    }
     if (argc == 4 && std::wstring(argv[1]) == L"self-test-av") {
         try {
             if (!fs::path(argv[2]).is_absolute()) throw std::runtime_error("absolute_test_root_required");
@@ -419,12 +498,14 @@ int wmain(int argc, wchar_t** argv) {
     try {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
-        Capture capture; Recording recording;
-        Emit("{\"type\":\"ready\",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600,\"systemAudioSupported\":true,\"protocolVersion\":2}");
+        Capture capture; Recording recording;std::unique_ptr<RecentMedia> recent;RecentExport exporter;MediaBudget budget;
+        const auto bufferEvent=[&](const char* type){if(recent)Emit("{\"type\":"+Json(type)+","+recent->Status()+","+budget.Status()+"}");};
+        const auto stopBuffer=[&](const std::string& reason){if(recent&&recent->Active()){recent->Stop(reason);bufferEvent("buffer_state");}};
+        Emit("{\"type\":\"ready\",\"workerPid\":"+std::to_string(GetCurrentProcessId())+",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600,\"systemAudioSupported\":true,\"bufferSupported\":true,\"protocolVersion\":3,"+budget.Status()+"}");
         HANDLE input = GetStdHandle(STD_INPUT_HANDLE); std::string pending; bool quitting = false; auto lastPing = Clock::now(), progress = lastPing;
         while (!quitting) {
             DWORD available = 0;
-            if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr)) { recording.Finish("interrupted", "parent_disconnected"); break; }
+            if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr)) { recording.Finish("interrupted", "parent_disconnected");stopBuffer("agent_disconnected");exporter.Cancel(); break; }
             if (available) {
                 char bytes[4096]; DWORD received = 0;
                 if (!ReadFile(input, bytes, std::min<DWORD>(available, sizeof(bytes)), &received, nullptr) || !received) break;
@@ -438,10 +519,34 @@ int wmain(int argc, wchar_t** argv) {
                 try {
                     if (args.size() < 2) throw std::runtime_error("invalid_command"); request = Number(args[1], 1, 2147483647); const std::string op = args[0];
                     if (op == "ping" && args.size() == 2) { lastPing = Clock::now(); Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}"); continue; }
-                    if (op == "quit" && args.size() == 2) { recording.Finish("interrupted", "controller_shutdown"); quitting = true; }
+                    if (op == "quit" && args.size() == 2) { recording.Finish("interrupted", "controller_shutdown");stopBuffer("worker_shutdown");exporter.Cancel(); quitting = true; }
                     else if (op == "stop" && args.size() == 2) recording.Finish("stopped", "requested");
+                    else if(op=="buffer_start"&&args.size()==5){
+                        if(!MediaLimitsActive())throw std::runtime_error("media_resource_limits_required");
+                        MediaBudget::Admit();
+                        if(recording.active()||exporter.Busy())throw std::runtime_error("media_busy");
+                        if(recent&&recent->Active())throw std::runtime_error("buffer_already_active");
+                        Identifier(args[2]);const auto profile=RecentProfile(args[4]);if(args[3]!="audio"&&args[3]!="video"&&args[3]!="combined")throw std::runtime_error("invalid_buffer_mode");
+                        if(RequireConsole()!=L"Default")throw std::runtime_error("default_desktop_required");
+                        Frame first,source;if(args[3]!="audio"){source=capture.Grab(true);first=BufferFrame(capture,source,profile);}
+                        recent=std::make_unique<RecentMedia>();recent->sourceWidth=source.width;recent->sourceHeight=source.height;
+                        budget=MediaBudget();recent->Begin(args[2],args[3],args[4],first);bufferEvent("buffer_state");
+                        Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,"+recent->Status()+","+budget.Status()+"}");continue;
+                    }else if(op=="buffer_status"&&args.size()==2){
+                        Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,"+(recent?recent->Status():"\"state\":\"idle\"")+","+budget.Status()+"}");continue;
+                    }else if(op=="buffer_stop"&&args.size()==3){
+                        if(args[2]!="requested"&&args[2]!="operator_stop"&&args[2]!="agent_disconnected"&&args[2]!="recording_started")throw std::runtime_error("invalid_stop_reason");
+                        stopBuffer(args[2]);if(args[2]=="agent_disconnected"){exporter.Cancel();recent.reset();}
+                        Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,"+(recent?recent->Status():"\"state\":\"idle\"")+","+budget.Status()+"}");continue;
+                    }else if(op=="buffer_export"&&args.size()==4){
+                        if(recording.active()||exporter.Busy())throw std::runtime_error("media_busy");
+                        if(!recent||!recent->history)throw std::runtime_error("buffer_not_ready");
+                        const int seconds=Number(args[3],1,30);Identifier(args[2]);exporter.Start(recent->history->Snapshot(seconds),root,args[2],recent->id,request);continue;
+                    }
                     else if (op == "record" && (args.size() == 7 || args.size() == 8)) {
-                        RequireConsole(); recording.Begin(capture, root, args[2], Number(args[3], 1, MaximumSeconds), Number(args[4], 1, 30), Number(args[5], 0, 3840), Number(args[6], 1000000, 20000000), args.size() == 7 || Number(args[7], 0, 1) != 0);
+                        Identifier(args[2]);const int duration=Number(args[3],1,MaximumSeconds),fps=Number(args[4],1,30),width=Number(args[5],0,3840),bits=Number(args[6],1000000,20000000);const bool audio=args.size()==7||Number(args[7],0,1)!=0;
+                        RequireConsole();if(recording.active()||exporter.Busy())throw std::runtime_error("media_busy");stopBuffer("recording_started");budget=MediaBudget();
+                        recording.Begin(capture, root, args[2],duration,fps,width,bits,audio);
                         Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true," + recording.Status("recording") + "}"); continue;
                     } else if (op == "snapshot" && args.size() == 6) {
                         Identifier(args[2]); const bool jpeg = args[3] == "jpeg"; if (!jpeg && args[3] != "png") throw std::runtime_error("invalid_image_format");
@@ -455,15 +560,31 @@ int wmain(int argc, wchar_t** argv) {
             }
             if (recording.active()) {
                 try {
-                    RequireConsole(); const auto now = Clock::now();
+                    RequireConsole();budget.CheckUsage(); const auto now = Clock::now();
                     if (now - lastPing > std::chrono::seconds(5)) recording.Finish("interrupted", "controller_heartbeat_lost");
                     else recording.Tick(capture);
                     if (recording.active() && now - progress >= std::chrono::seconds(1)) { Emit("{\"type\":\"recording_progress\"," + recording.Status("recording") + "}"); progress = now; }
                 } catch (const std::exception& error) { recording.Finish("interrupted", error.what()); capture.Reset(); }
             }
+            if(recent&&recent->Active()){
+                try{
+                    const auto now=Clock::now();if(now-lastPing>std::chrono::seconds(5))throw std::runtime_error("controller_heartbeat_lost");
+                    if(RequireConsole()!=L"Default")throw std::runtime_error("desktop_changed");budget.CheckUsage();recent->PumpAudio();
+                    if(recent->hasVideo&&now>=recent->next){
+                        Frame source=capture.Grab(true);if(source.desktop!="Default"||source.width!=recent->sourceWidth||source.height!=recent->sourceHeight)throw std::runtime_error("display_changed");
+                        const auto interval=std::chrono::microseconds(1000000/recent->profile.fps);
+                        if(now-recent->next>std::chrono::seconds(2))throw std::runtime_error("capture_backlog");
+                        if(now-recent->next>interval*2)recent->droppedFrames++;
+                        recent->WriteVideo(BufferFrame(capture,source,recent->profile),recent->Elapsed());recent->next=Clock::now()+interval;
+                    }
+                    if(!recent->history->Error().empty())throw std::runtime_error(recent->history->Error());
+                    if(now-progress>=std::chrono::seconds(1)){bufferEvent("buffer_progress");progress=now;}
+                }catch(const std::exception& error){stopBuffer(error.what());capture.Reset();}
+            }
             Sleep(5);
         }
         recording.Finish("interrupted", "parent_disconnected");
+        stopBuffer("worker_shutdown");exporter.Cancel();
         return 0;
     } catch (const std::exception& error) { Emit("{\"type\":\"fatal\",\"error\":" + Json(error.what()) + "}"); return 1; }
 }

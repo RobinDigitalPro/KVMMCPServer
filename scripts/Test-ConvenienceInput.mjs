@@ -45,7 +45,7 @@ const point = (x, y, current) => ({ x: Math.round(x * 32767 / (current.primaryWi
 try {
   for (let n = 0; n < 50; n++) { try { if ((await state()).processId !== child.pid) throw new Error('Waiting for receiver'); break; } catch { if (n === 49) throw new Error('Receiver did not initialize'); await delay(100); } }
   await client.connect(transport);
-  const catalog = (await client.listTools()).tools; assert.equal(catalog.length, 17);
+  const catalog = (await client.listTools()).tools; assert.equal(catalog.length, 23);
   ({ token } = await call('hid_acquire', { owner: 'input-acceptance', ttlMs: 60000 }));
   await call('hid_capture', { token, format: 'jpeg', maxWidth: 1280 });
   const frame = await call('hid_capture', { token, format: 'jpeg', maxWidth: 1280 });

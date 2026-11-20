@@ -27,7 +27,7 @@ async function connect(name) {
 const receipt = { startedUtc: new Date().toISOString(), requestedSeconds: seconds, captureOnlyHarness: true, hidWritesSuppressed: true, inputSent: false };
 try {
   const a = await connect('capture-owner'), b = await connect('capture-other');
-  receipt.toolCount = (await a.listTools()).tools.length; assert.equal(receipt.toolCount, 17);
+  receipt.toolCount = (await a.listTools()).tools.length; assert.equal(receipt.toolCount, 23);
   const lease = text(await a.callTool({ name: 'hid_acquire', arguments: { owner: 'capture-acceptance', ttlMs: 10000 } }));
   const image = await a.callTool({ name: 'hid_capture', arguments: { token: lease.token, format: 'jpeg', maxWidth: 1280 } });
   assert.equal(image.isError, undefined); assert.equal(image.content[1].mimeType, 'image/jpeg'); receipt.snapshot = text(image);

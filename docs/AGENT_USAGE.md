@@ -1,5 +1,77 @@
 # Local agent use
 
+## Relative gestures and recent media
+
+Version 0.8.0 adds two single-call relative gestures. Observe and focus the
+intended target first, then use a short lease covering the entire action:
+
+```json
+{"name":"hid_move_click_relative","arguments":{"token":"LEASE_TOKEN","dx":40,"dy":12,"pauseMs":100,"durationMs":80}}
+{"name":"hid_drag_relative","arguments":{"token":"LEASE_TOKEN","dx":200,"dy":0,"holdMs":50,"durationMs":700}}
+```
+
+Both default to the left button; `button` also accepts `right` and `middle`.
+Relative counts are subject to OS acceleration. Move-click allows a 0..1000 ms
+pause and 1..1000 ms press; drag allows a 1..5000 ms movement and 0..1000 ms
+initial hold. The local controller serializes the whole gesture and releases
+buttons on interruption. Existing held mouse buttons are refused. These tools
+work on the ordinary desktop; UAC continues to use explicit absolute consent
+clicks. Never repeat a gesture with an unknown outcome without observing first.
+
+The optional recent-media buffer has four tools:
+
+```json
+{"name":"media_buffer_start","arguments":{"token":"LEASE_TOKEN","mode":"combined","profile":"standard"}}
+{"name":"hid_release","arguments":{"token":"LEASE_TOKEN"}}
+{"name":"media_buffer_status","arguments":{"bufferId":"BUFFER_UUID"}}
+{"name":"media_buffer_export","arguments":{"bufferId":"BUFFER_UUID","seconds":15}}
+{"name":"media_buffer_stop","arguments":{"bufferId":"BUFFER_UUID"}}
+```
+
+Choose exactly one mode: `audio`, `video`, or `combined`. There is one buffer,
+not separately startable audio/video buffers. Combined export is one MP4 with
+synchronized picture and sound; audio-only exports M4A. System playback audio
+only, never microphone or transcription. Audio/combined startup refuses an
+unavailable playback endpoint instead of silently changing mode.
+
+| Profile | Maximum video bounds | FPS | Video bitrate |
+| --- | --- | --- | --- |
+| light | 640x360 | 5 | 1 Mbit/s |
+| standard (default) | 1280x720 | 10 | 2 Mbit/s |
+| high | 1920x1080 | 15 | 4 Mbit/s |
+
+Video fits both bounds without upscaling. Audio is fixed at 48 kHz stereo,
+16-bit capture and AAC 160 kbit/s. Free codec/resolution/PCM parameters are
+refused. Prefer light for a busy workstation, and inspect status measurements.
+
+History is encoded once in RAM, up to 30 seconds and 32 MiB. No continuous disk
+recording is made. Export copies encoded samples into one external file without
+re-encoding. Keyframe alignment and warmup can shorten the requested duration;
+use `actualSeconds`, not the requested value, as the real result. A stopped
+buffer retains frozen history until replaced or its connection disconnects.
+
+`screen_record_start` **stops buffering first**, including a buffer owned by
+another connection. An active recording refuses buffer startup and export.
+There is no automatic buffer restart after recording. Starts and exports are
+serialized with a small bounded queue; allow a current export to finish before
+starting another media operation. A short input lease authorizes startup; buffer
+status/stop/export need only the owning connection and bufferId. Reconnecting
+creates a new owner and cannot recover the old private buffer.
+
+`media_buffer_status` returns state, reason, sequence, availableSeconds, bytes,
+effective quality, late frames, and resource measurements. Significant unseen
+owner events are attached as an additional text content item to the next tool
+result. Progress does not generate event spam. These events do not wake an idle
+model; do not add periodic model polling. Stop reasons remain inspectable.
+
+The media process has a Windows Job Object hard ceiling of 5% total machine CPU
+and 512 MiB private committed memory. Sustained CPU pressure, private memory over
+384 MiB, low system memory, capture backlog, desktop/session/display change,
+worker loss and operator stop terminate buffering with a reason. A failed media
+worker is disposed separately; healthy HID remains available. Obtain a fresh
+screenshot before further input after losing visual observation. Limits bound
+user-mode resources; no universal guarantee against OS/GPU driver faults is made.
+
 An MCP client launches a local adapter with stdin/stdout connected:
 
 ```powershell
@@ -18,7 +90,7 @@ For Codex registration, run the supplied installation script as the normal user:
 .\scripts\Install-McpConnection.ps1 -NodePath C:\Tools\node.exe -NativeExecutable D:\AgentData\desktop-hid\native\HidTransport.exe -DataRoot D:\AgentData\desktop-hid
 ```
 
-It registers seventeen tools and leaves the client's approval policy unchanged.
+It registers twenty-three tools and leaves the client's approval policy unchanged.
 Reload the client MCP connection if its catalog has not refreshed. A terminal
 launch alone does not attach tools to a chat.
 

@@ -39,7 +39,7 @@ const events = async () => (await fs.readFile(log, 'utf8')).replace(/^\uFEFF/, '
 try {
   for (let n = 0; n < 50; n++) { try { await foreground(); break; } catch { if (n === 49) throw new Error('Observer is not foreground'); await delay(100); } }
   await client.connect(transport);
-  receipt.toolCount = (await client.listTools()).tools.length; assert.equal(receipt.toolCount, 17);
+  receipt.toolCount = (await client.listTools()).tools.length; assert.equal(receipt.toolCount, 23);
   ({ token } = await call('hid_acquire', { owner: 'key-timing-acceptance', ttlMs: 60000 }));
   await call('hid_capture', { token, format: 'jpeg', maxWidth: 1280 });
   const frame = await call('hid_capture', { token, format: 'jpeg', maxWidth: 1280 });
