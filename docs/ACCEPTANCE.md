@@ -32,6 +32,24 @@ The actual NativeTransport is additionally tested with isolated fake processes:
 an encoder fault keeps the HID connection healthy and a fresh observation
 recreates media; a HID fault still calls the controller stop path.
 
+On-host audio/video/combined buffers also passed through the official stdio MCP
+adapter. A combined buffer ran over 35 seconds and exported 5/15/30-second clips
+with decodable video and actual system-loopback audio (a quiet test tone).
+Retained history was about 29.33 seconds; live private memory was approximately
+12/92/120 MiB for the tested audio/light-video/standard-combined modes. CPU is
+workload-dependent; the combined case approached its 5% hard cap.
+
+A recording start stopped that buffer with `recording_started`, and buffer
+startup was refused while recording. The full 60-second 1280x720 recording
+finalized correctly, with system audio and 509 fully decodable video frames.
+The hard CPU ceiling can lower actual frame rate. A too-aggressive soft CPU
+auto-stop on ordinary recordings was removed; background buffers still stop
+on sustained CPU pressure, while all media retains the hard job limits.
+
+Host-specific receipts are external: native-buffer-acceptance.json,
+gestures-live-acceptance.json and live-buffer-acceptance.json. No screenshots,
+recordings, host credentials or personal paths are published in this repository.
+
 ## Bounded native text-plan replies, 0.7.2
 
 A 78-unit string reproduced the old native JavaScriptSerializer exception without
