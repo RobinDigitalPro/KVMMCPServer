@@ -2,7 +2,7 @@
 
 ## Relative gestures and recent-media buffer, 0.8.0
 
-The ordinary suite passes 82 JavaScript tests, including both gestures,
+The ordinary suite passes 83 JavaScript tests, including both gestures,
 cancellation/expiry/lost acknowledgements, buffer ownership/lifetime, serialized
 recording preemption, invalid requests, event delivery, queue capacity and
 disconnect cleanup. A failed media state leaves healthy input usable.
@@ -25,6 +25,12 @@ Reproduce with scripts/Test-MediaBuffer.mjs and a new external output directory.
 
 Live host acceptance is performed separately after the main chat's explicit
 maintenance checkpoint. No HID kernel or SYSTEM UAC-service update is required.
+The live receiver observed a relative move-click (100 ms pause/50 ms hold),
+17 selected characters after a 500 ms relative drag, and neutral release after
+SDK cancellation. All 23 tools were discovered by the official SDK adapter.
+The actual NativeTransport is additionally tested with isolated fake processes:
+an encoder fault keeps the HID connection healthy and a fresh observation
+recreates media; a HID fault still calls the controller stop path.
 
 ## Bounded native text-plan replies, 0.7.2
 

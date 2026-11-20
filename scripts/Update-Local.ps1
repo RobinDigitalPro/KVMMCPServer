@@ -95,7 +95,7 @@ if (Test-Path -LiteralPath $taskVerificationPath) {
     $taskVerification = Get-Content -LiteralPath $taskVerificationPath -Raw | ConvertFrom-Json
     $taskVerification.version = $taskCandidateVersion; $taskVerification.updatedUtc = [DateTime]::UtcNow.ToString('o')
     $taskVerification.sourceFileCount = $taskFiles.Count
-    $taskVerification.javascriptTests = if ($taskCandidateVersion -eq '0.8.0') { 82 } elseif ($taskCandidateVersion -in @('0.7.0','0.7.1','0.7.2')) { 67 } elseif ($taskCandidateVersion -eq '0.6.0') { 55 } elseif ($taskCandidateVersion -eq '0.5.0') { 46 } elseif ($taskCandidateVersion -eq '0.4.0') { 41 } else { 39 }
+    $taskVerification.javascriptTests = if ($taskCandidateVersion -eq '0.8.0') { 83 } elseif ($taskCandidateVersion -in @('0.7.0','0.7.1','0.7.2')) { 67 } elseif ($taskCandidateVersion -eq '0.6.0') { 55 } elseif ($taskCandidateVersion -eq '0.5.0') { 46 } elseif ($taskCandidateVersion -eq '0.4.0') { 41 } else { 39 }
     if ($taskVerification.mcp) { $taskVerification.mcp.toolCount = if ($taskCandidateVersion -eq '0.8.0') { 23 } elseif ($taskCandidateVersion -in @('0.7.0','0.7.1','0.7.2')) { 17 } elseif ($taskCandidateVersion -eq '0.6.0') { 14 } else { 11 } }
     $taskVerification.sourceManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $taskData 'source-manifest.json')).Hash
     if ($taskVerification.availableUpdate) { $taskVerification.availableUpdate.activationPending = $false }

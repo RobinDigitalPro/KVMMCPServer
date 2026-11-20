@@ -52,14 +52,14 @@ public:
     MediaBudget(){previousCpu=Cpu();}
     static bool MemoryAdmitted(ULONGLONG available){return available>=512ULL*1024*1024;}
     static void Admit(){MEMORYSTATUSEX system={};system.dwLength=sizeof(system);if(!GlobalMemoryStatusEx(&system)||!MemoryAdmitted(system.ullAvailPhys))throw std::runtime_error("insufficient_available_memory");}
-    void CheckUsage(){
+    void CheckUsage(bool stopOnCpu=true){
         const auto now=Clock::now();const double seconds=std::chrono::duration<double>(now-checked).count();if(seconds<1)return;
         PROCESS_MEMORY_COUNTERS_EX memory={};memory.cb=sizeof(memory);if(!GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory),sizeof(memory)))throw std::runtime_error("media_usage_unavailable");privateBytes=memory.PrivateUsage;
         const auto total=Cpu();cpuPercent=static_cast<double>(total-previousCpu)/10000000/seconds/std::max<DWORD>(1,GetActiveProcessorCount(ALL_PROCESSOR_GROUPS))*100;previousCpu=total;checked=now;
         MEMORYSTATUSEX system={};system.dwLength=sizeof(system);if(!GlobalMemoryStatusEx(&system))throw std::runtime_error("media_usage_unavailable");
         if(privateBytes>384ULL*1024*1024)throw std::runtime_error("memory_pressure");
         if(system.ullAvailPhys<256ULL*1024*1024)throw std::runtime_error("system_memory_pressure");
-        hot=cpuPercent>=4.5?hot+1:0;if(hot>=5)throw std::runtime_error("cpu_pressure");
+        hot=cpuPercent>=4.5?hot+1:0;if(stopOnCpu&&hot>=5)throw std::runtime_error("cpu_pressure");
     }
     std::string Status()const{std::ostringstream out;out<<"\"resources\":{\"privateBytes\":"<<privateBytes<<",\"cpuPercent\":"<<cpuPercent<<",\"cpuHardCapPercent\":5,\"privateCommitLimitBytes\":"<<MediaCommitLimit<<",\"limitsActive\":"<<(MediaLimitsActive()?"true":"false")<<"}";return out.str();}
 };

@@ -26,13 +26,14 @@ export function secureInputDeadline(leaseDeadline, capturedAt, now = Date.now())
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
   #captureWorker; #recordingListeners = new Set(); #bufferListeners = new Set(); #mediaError; #inputResetEpoch = 0; #textContext;
+  #captureFactory;
   #securePrompt; #secureCapturedAt = 0; #inputDeadline; #secureInputPending = false; #completedSecureClick;
-  constructor(executable, { dataRoot, onFault = () => {} } = {}) {
+  constructor(executable, { dataRoot, onFault = () => {}, spawnHid = spawn, captureFactory = (exe, root) => new CaptureWorker(exe, root) } = {}) {
     if (typeof executable !== 'string' || !executable) throw new TypeError('native executable path required');
     if (dataRoot && !path.isAbsolute(dataRoot)) throw new TypeError('capture dataRoot must be absolute');
-    this.#executable = executable; this.#dataRoot = dataRoot; this.#onFault = onFault;
+    this.#executable = executable; this.#dataRoot = dataRoot; this.#onFault = onFault;this.#captureFactory = captureFactory;
     this.#ready = new Promise((resolve, reject) => { this.#resolveReady = resolve; this.#rejectReady = reject; });
-    this.#child = spawn(executable, ['serve', '--live'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.#child = spawnHid(executable, ['serve', '--live'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.#exit = new Promise(resolve => this.#child.once('exit', resolve));
     this.#child.on('error', error => this.#fail(error));
     this.#child.on('exit', code => { if (!this.#closing || code !== 0) this.#fail(new Error(`native helper exited (${code})`)); });
@@ -73,7 +74,7 @@ export class NativeTransport {
     if (this.#fatal || this.#closing) throw this.#fatal ?? new Error('Native transport is closed');
     if (!this.recordingAvailable) throw new Error('Build/install ScreenCapture.exe beside HidTransport.exe to enable recording');
     if (!this.#captureWorker) {
-      const worker = new CaptureWorker(path.join(path.dirname(this.#executable), 'ScreenCapture.exe'), this.#dataRoot);
+      const worker = this.#captureFactory(path.join(path.dirname(this.#executable), 'ScreenCapture.exe'), this.#dataRoot);
       this.#captureWorker = worker;this.#mediaError = undefined;
       // Media has its own disposable, OS-limited process. Its failure must not
       // poison the HID transport or persist a global operator stop.

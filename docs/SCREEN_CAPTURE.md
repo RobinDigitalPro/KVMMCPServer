@@ -8,6 +8,9 @@ Windows Job Object with CPU/private-memory ceilings. Existing recording options
 remain accepted, but resource pressure can interrupt an expensive recording and
 its result must always be checked for finalization/reason. Buffering on a secure
 desktop stops; explicit UAC screenshots/recording retain their existing path.
+Ordinary recording keeps its requested duration under CPU throttling, possibly
+with fewer actual frames; CPU-pressure auto-stop applies to background buffering.
+Memory/session/worker failures can still interrupt recording explicitly.
 
 Native buffer tests use synthetic pixels and audio without opening a desktop,
 speaker, microphone or HID device:

@@ -560,7 +560,7 @@ int wmain(int argc, wchar_t** argv) {
             }
             if (recording.active()) {
                 try {
-                    RequireConsole();budget.CheckUsage(); const auto now = Clock::now();
+                    RequireConsole();budget.CheckUsage(false); const auto now = Clock::now();
                     if (now - lastPing > std::chrono::seconds(5)) recording.Finish("interrupted", "controller_heartbeat_lost");
                     else recording.Tick(capture);
                     if (recording.active() && now - progress >= std::chrono::seconds(1)) { Emit("{\"type\":\"recording_progress\"," + recording.Status("recording") + "}"); progress = now; }
