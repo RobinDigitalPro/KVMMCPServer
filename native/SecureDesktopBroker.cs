@@ -134,8 +134,8 @@ namespace OpenDesktopHid {
             string config=Path.Combine(expected,"secure-desktop.json"); if(new FileInfo(config).Length>16384)throw new IOException("Configuration size limit");
             settings=SecureProtocol.Json.Deserialize<SecureSettings>(File.ReadAllText(config));
             var sid=new SecurityIdentifier(settings.operatorSid); if(!sid.IsAccountSid())throw new IOException("Operator account SID required");
-            if(settings.applications==null || settings.applications.Length>32)throw new IOException("Application configuration required");
-            foreach(var application in settings.applications){if(String.IsNullOrEmpty(application.id)||String.IsNullOrEmpty(application.path)||String.IsNullOrEmpty(application.sha256)||!Path.GetFullPath(application.path).StartsWith(expected+"\\",StringComparison.OrdinalIgnoreCase)||(File.GetAttributes(application.path)&FileAttributes.ReparsePoint)!=0)throw new IOException("Applications must be staged in the protected installation directory");}
+            // Backward-compatible diagnostic metadata, no longer an approval allowlist.
+            if(settings.applications==null)settings.applications=new ApprovedApplication[0];
             var security=new EventWaitHandleSecurity();security.SetOwner(new SecurityIdentifier("S-1-5-18"));security.SetAccessRuleProtection(true,false);security.AddAccessRule(new EventWaitHandleAccessRule(new SecurityIdentifier("S-1-5-18"),EventWaitHandleRights.FullControl,AccessControlType.Allow));security.AddAccessRule(new EventWaitHandleAccessRule(sid,EventWaitHandleRights.Synchronize,AccessControlType.Allow));
             stopEventName="Global\\KVMMCPServer.UacStop."+Guid.NewGuid().ToString("N");bool created;stopEvent=new EventWaitHandle(false,EventResetMode.AutoReset,stopEventName,out created,security);if(!created)throw new IOException("Stop event collision");
             listener=new Thread(Listen){IsBackground=true};listener.Start();
@@ -179,7 +179,7 @@ namespace OpenDesktopHid {
                             string decision=SecureProtocol.Text(request,"decision"),id=SecureProtocol.Text(request,"applicationId");
                             if(decision!="approve"&&decision!="deny")throw new IOException("Invalid decision");
                             var app=settings.applications.SingleOrDefault(item=>item.id==id);
-                            if(decision=="approve" && app==null)throw new IOException("Application is not operator-approved");
+                            // Local operator consent is not filtered by executable path or hash.
                             object deadline;request.TryGetValue("deadlineUtcMs",out deadline);
                             request=new Dictionary<string,object>{{"op",op},{"decision",decision},{"promptId",SecureProtocol.Text(request,"promptId")},{"application",app},{"deadlineUtcMs",deadline}};
                         }
@@ -189,7 +189,7 @@ namespace OpenDesktopHid {
                             if(expires<=now||expires>now+60000)throw new IOException("Input authorization expired or exceeds a short lease");
                             request["deadlineUtcMs"]=Math.Min(expires,now+5000);request["budgetMs"]=Math.Min(5000,expires-now);request["clientPid"]=caller["pid"];request["clientStarted"]=caller["started"];
                         }
-                        var reply=worker.Call(request);if(op=="status"||op=="attach"){reply["applications"]=settings.applications;reply["networkListener"]=false;}if((op=="input"||op=="respond")&&SecureProtocol.Text(reply,"decision")!="motion"){object ok;if(reply.TryGetValue("ok",out ok)&&ok is bool&&(bool)ok){try{EventLog.WriteEntry(ServiceName,"UAC "+SecureProtocol.Text(reply,"decision")+"; operator="+settings.operatorSid+"; clientPid="+caller["pid"]+"; applicationId="+SecureProtocol.Text(reply,"applicationId"),EventLogEntryType.Information);}catch{}}}SecureProtocol.WriteJson(pipe,reply,5000);
+                        var reply=worker.Call(request);if(op=="status"||op=="attach"){reply["applications"]=settings.applications;reply["networkListener"]=false;reply["consentPolicy"]="recognized_prompt";reply["policyVersion"]="0.8.0";}if((op=="input"||op=="respond")&&SecureProtocol.Text(reply,"decision")!="motion"){object ok;if(reply.TryGetValue("ok",out ok)&&ok is bool&&(bool)ok){try{EventLog.WriteEntry(ServiceName,"UAC "+SecureProtocol.Text(reply,"decision")+"; operator="+settings.operatorSid+"; clientPid="+caller["pid"]+"; applicationId="+SecureProtocol.Text(reply,"applicationId"),EventLogEntryType.Information);}catch{}}}SecureProtocol.WriteJson(pipe,reply,5000);
                     }catch(Exception error) {if(worker!=null){worker.Dispose();worker=null;}if(op=="frame")SecureProtocol.Write(pipe,SecureDesktopWorker.ErrorFrame(),3000);else SecureProtocol.WriteJson(pipe,new{ok=false,error=error.Message},3000);}
                 }}catch(Exception error){if(!stopping){if(DateTime.UtcNow-lastWarning>TimeSpan.FromSeconds(10)){try{EventLog.WriteEntry(ServiceName,error.Message,EventLogEntryType.Warning);}catch{}lastWarning=DateTime.UtcNow;}Thread.Sleep(100);}}finally{active=null;}
             }
@@ -265,7 +265,7 @@ namespace OpenDesktopHid {
             request["stopEpoch"]=promptEpoch;
             IntPtr window;using(var consent=Consent(out window)) {
                 if(promptPid!=(uint)consent.Id||promptTicks!=consent.StartTime.ToUniversalTime().Ticks||window!=promptWindow)throw new IOException("UAC prompt changed");
-                var elements=Elements(window);var locations=ProgramLocations(elements);
+                var elements=Elements(window);
                 foreach(AutomationElement item in elements)if(item.Current.IsPassword)throw new IOException("Credential prompts are not supported");
                 byte[] requested=null;double requestedX=0,requestedY=0;
                 if(decision=="click") {
@@ -282,21 +282,7 @@ namespace OpenDesktopHid {
                     else if(new[]{"No","Nee","Cancel","Annuleren"}.Contains(label))decision="deny";
                     else if(SecureConsentProfile.DetailsLabels.Contains(label))decision="details";
                     else throw new IOException("This UAC control cannot be operated");
-                    if(decision=="approve"){
-                        object rawApps;request.TryGetValue("applications",out rawApps);
-                        var apps=SecureProtocol.Json.ConvertToType<ApprovedApplication[]>(rawApps);
-                        var matching=apps.Where(app=>locations.Any(location=>MatchesPath(location,app.path))).ToArray();
-                        if(matching.Length!=1)throw new IOException("Show the executable location; this application must be explicitly operator-approved");
-                        applicationId=matching[0].id;
-                        request["application"]=new Dictionary<string,object>{{"path",matching[0].path},{"sha256",matching[0].sha256}};
-                    }
-                }
-                if(decision=="approve") {
-                    object raw;request.TryGetValue("application",out raw);var app=raw as Dictionary<string,object>;
-                    if(app==null)throw new IOException("Approved application is missing");
-                    string path=SecureProtocol.Text(app,"path"),sha=SecureProtocol.Text(app,"sha256");
-                    if(String.IsNullOrEmpty(path)||String.IsNullOrEmpty(sha)||!Path.IsPathRooted(path)||(File.GetAttributes(path)&FileAttributes.ReparsePoint)!=0||SecureNative.Hash(path)!=sha.ToLowerInvariant())throw new IOException("Approved executable hash mismatch");
-                    if(!locations.Any(location=>MatchesPath(location,path)))throw new IOException("UAC executable location field is unavailable or does not match the approved application");
+                    if(decision=="approve")applicationId="local_operator";
                 }
                 AutomationElement button=null;
                 string[] accepted=decision=="approve"?new[]{"Yes","Ja"}:decision=="details"?SecureConsentProfile.DetailsLabels:new[]{"No","Nee","Cancel","Annuleren"};

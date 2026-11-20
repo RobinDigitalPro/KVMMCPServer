@@ -22,15 +22,15 @@ test('a completed consent click consumes only its matching absolute button relea
   assert.equal(completedConsentRelease(undefined, up), false);
 });
 
-test('a refused UAC application sends no fallback input and preserves the lease', async () => {
+test('a refused UAC control sends no fallback input and preserves the lease', async () => {
   let sends = 0, releases = 0;
   const transport = {
-    send: async () => { sends++; const error = new Error('Application is not approved'); error.policyRefusal = true; throw error; },
+    send: async () => { sends++; const error = new Error('Click is outside a recognized UAC button'); error.policyRefusal = true; throw error; },
     releaseInput: async () => { releases++; },
   };
   const session = new HidSession(transport);
   const lease = await session.acquire('uac-policy', 60000);
-  await assert.rejects(session.moveAbsolute(lease.token, { x: 100, y: 100, buttons: 1 }), /not approved/);
+  await assert.rejects(session.moveAbsolute(lease.token, { x: 100, y: 100, buttons: 1 }), /outside a recognized UAC button/);
   assert.equal(session.status().faulted, false);
   assert.equal(session.status().owner, 'uac-policy');
   assert.equal(sends, 1);

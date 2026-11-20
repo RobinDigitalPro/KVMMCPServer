@@ -17,9 +17,11 @@ shared-controller live test. See [acceptance](docs/ACCEPTANCE.md).
 This is a development release of [KVMMCPServer](https://github.com/RobinDigitalPro/KVMMCPServer), using the OpenDesktopHID driver. No production-signed driver distribution is provided. Other displays/DPI and physical
 hotkey acceptance remain separate tests.
 
-An optional, separately installed SYSTEM service provides UAC screenshots and
-one-shot consent clicks through the capture/mouse tools. Approval is restricted
-to administrator-staged executable paths and SHA-256 hashes. See
+An optional, separately installed SYSTEM service (policy **0.8.0**) provides UAC
+screenshots and one-shot consent clicks through the capture/mouse tools. The
+authorized local operator can approve a recognized Windows consent prompt for
+any program; there is no separate executable allowlist. Agent authorization for
+the requested host change is still required. See
 [secure desktop setup and limits](docs/SECURE_DESKTOP.md).
 
 The seventeen tools also include `hid_key_down`, `hid_key_up` and

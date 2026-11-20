@@ -1,5 +1,25 @@
 # Desktop acceptance
 
+## Local operator UAC consent, service policy 0.8.0
+
+On 2026-11-20 the protected service was updated and its status reported
+`consentPolicy: recognized_prompt`, `policyVersion: 0.8.0`. Controller/MCP remains
+0.7.1. The user explicitly requested removal of the per-executable allowlist.
+
+A copy of the harmless elevated-token probe at a nonregistered operational
+path was launched through ordinary Windows RunAs. A real `hid_capture` returned
+its Winlogon consent screenshot. The actual MCP `hid_click` on Yes returned
+`inputSent: true`, `secureConsent: true`; the program exited with code 0.
+An earlier off-button click was refused without input or a controller fault.
+The post-click capture returned to Default, and the lease was released.
+The probe changes no host configuration. Initial bootstrap installation was
+separate from this normal-MCP acceptance test.
+
+Host receipts stay in the operational data directory, not the public repository.
+No Windows UAC policy was disabled. Existing stale-prompt, caller/session,
+deadline, credential and operator-stop checks remain in the code. Physical
+Ctrl+Alt+F12 on Winlogon still requires the previously documented manual test.
+
 ## Base-layout detection correction, 0.7.1
 
 An additional test after reloading the Codex MCP connection caught a false IME

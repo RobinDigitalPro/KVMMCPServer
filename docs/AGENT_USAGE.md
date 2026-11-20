@@ -174,11 +174,13 @@ emergency stop can interrupt a split batch between packets.
 
 Native heartbeat loss releases/stops at two seconds; the VHF watchdog is
 independent at three seconds. Session changes and unsupported input desktops
-stop the native helper and persist a fault. With the optional 0.5.0
+stop the native helper and persist a fault. With the optional 0.8.0
 [UAC service](SECURE_DESKTOP.md), the normal writer pauses for real consent
 dialogs. Inspect a fresh UAC screenshot, expand its details if necessary and
-use an absolute left click. Yes is limited to administrator-staged path/hash
-permissions; credential entry and unknown programs are refused. No automatic RDP/session transfer
+use an absolute left click. There is no per-program path/hash allowlist: the
+local operator may consent to any recognized prompt when the requested change
+is authorized. Credential entry and unidentified consent controls are refused.
+No automatic RDP/session transfer
 is performed. Use the shared physical console and validate the chosen remote
 viewer separately.
 

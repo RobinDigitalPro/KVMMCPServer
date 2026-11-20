@@ -51,4 +51,4 @@ try {
     Start-Service -Name $taskName
     throw ('Update failed; previous executable restored: '+$taskFailure)
 }
-Write-Output 'Secure Desktop service updated. Approved applications and UAC policy were preserved. Restart the ordinary controller and verify live acceptance.'
+Write-Output 'Secure Desktop service updated. Existing application metadata and Windows UAC policy were preserved. Restart the ordinary controller and verify live acceptance.'

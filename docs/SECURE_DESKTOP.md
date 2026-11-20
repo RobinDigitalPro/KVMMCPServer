@@ -1,8 +1,13 @@
 # Optional secure desktop / UAC support
 
-Implementation: 0.5.0. Physical-console tests on Windows 11 build 26100 verified
-real UAC capture, details expansion, approved probe elevation, refusal of an
-unapproved program path, expired-frame and wrong-owner rejection, and MCP stop.
+Service policy: **0.8.0**; compatible with controller/MCP **0.7.1**. The local
+operator requested removal of the original per-program consent allowlist.
+Physical-console testing verified a real MCP `hid_click` on Yes for an unstaged
+harmless probe, its elevated exit code 0, and refusal of a click outside a
+recognized button. Application registration is no longer required.
+
+Earlier 0.5.0 tests on Windows 11 build 26100 verified real UAC capture, details
+expansion, expired-frame and wrong-owner rejection, and MCP stop.
 A 90-second MP4 containing Default/UAC/Default transitions and system audio
 decoded completely. The first service installation needs manual Windows UAC
 approval; the extension cannot bootstrap its own rights.
@@ -26,7 +31,7 @@ $hashes = @{}
 foreach ($name in 'SecureDesktopBroker.exe','UacProbe.exe') {
     $hashes[$name] = (Get-FileHash -LiteralPath (Join-Path D:\AgentData\uac-build $name)).Hash
 }
-@{version='0.5.0';hashes=$hashes} | ConvertTo-Json |
+@{version='0.8.0';hashes=$hashes} | ConvertTo-Json |
     Set-Content -LiteralPath D:\AgentData\uac-build\secure-package.json -Encoding UTF8
 ```
 
@@ -50,10 +55,12 @@ run `scripts/Update-SecureDesktop.ps1` as administrator with `-BuildDirectory`,
 `-ExpectedInstalledSha256`, `-PackageManifestSha256` and
 `-ConfirmControllerStopped`. It pins both the existing binary and package,
 backs up the protected executable/receipt and restores them if activation fails.
-Approved applications, the probe, service registration and UAC policy remain.
+Existing application metadata, the probe, service registration and Windows UAC
+policy remain. Application metadata is diagnostic, not an approval filter.
 
-Deploy both newly built `HidTransport.exe` and `ScreenCapture.exe` plus 0.5.0
-user-mode source. Restart the normal controller after service installation or
+For the initial extension deploy compatible `HidTransport.exe`, `ScreenCapture.exe`
+and user-mode source. A service-only 0.8.0 update works with controller 0.7.1.
+Restart the normal controller after service installation or
 restart. A service identity change causes control to stop, requiring the normal
 explicit local resume. `hid_status.native.secureDesktopSupported` must be true
 before claiming the UAC route is available. Ordinary desktop use still works
@@ -61,7 +68,7 @@ without the optional service.
 
 ## Existing agent workflow
 
-Consent uses the existing capture/mouse tools; 0.7.0 has seventeen tools in total,
+Consent uses the existing capture/mouse tools; 0.7.1 has seventeen tools in total,
 including ordinary-desktop keyboard/text conveniences and an atomic click. Acquire a short lease and inspect a fresh
 `hid_capture` image. On a real Windows consent dialog it reports
 `desktop="Winlogon"` and a short-lived `uacPromptId`; this is internally forwarded
@@ -72,10 +79,12 @@ mouse action. Default-desktop input resumes after the prompt closes.
 For UAC, move with either mouse collection, but use an **absolute left click**
 for an identified consent button. `Show more details` may be operated so the
 executable location is visible. Take a new screenshot after expanding it. A
-click on Yes requires that exact executable path and SHA-256 match an approved
-staged application. No/Cancel can dismiss an identified prompt. A click on
+click on Yes approves the identified consent prompt without a separate
+executable path/hash check. Check the displayed program and requested operation
+against the user's authorization before approving. No/Cancel can dismiss an
+identified prompt. A click on
 another control, right click, wheel, keyboard entry, credentials, unrelated secure
-desktop, stale prompt or unknown executable is refused. No denied input is
+desktop or stale prompt is refused. No denied input is
 silently retried as ordinary desktop input.
 
 Approval sends a complete click and neutralization. The caller's subsequent
@@ -91,33 +100,31 @@ A secure-desktop transition can also show only the background while the dialog
 repaints. Inspect a subsequent fresh usable frame. Never use a black, blank or
 old frame as proof of the consent dialog or of a successful click.
 
-## Application permissions
+## Local operator consent
 
-Only the harmless protected `UacProbe.exe` is included initially. It has an
+The harmless protected `UacProbe.exe` is included for testing. It has an
 administrator manifest, checks whether its token is elevated, exits with code
 0 on success and changes no host configuration. The service does not launch it
 or any requested program; ordinary Windows elevation must already be pending.
 
-To allow a real **standalone** application, an administrator must explicitly
-review its source/publisher and SHA-256, stop the controller, then stage a copy:
+There is no program registration step in 0.8.0. Installers, PowerShell and other
+programs can receive consent through the same recognized Yes button. This gives
+the authorized local agent the ability to confirm Windows administrator
+elevation; users should grant it only to agents they trust with that capability.
+The service does not judge a command's intent or automatically approve prompts.
+It only performs the explicit, short-lived consent action requested by the
+registered local controller. The MCP remains local; remote job clients receive
+no HID or direct UAC tool.
 
-```powershell
-.\scripts\Register-SecureDesktopApplication.ps1 -Id my-installer `
-    -Executable D:\ReviewedPackages\Setup.exe -Sha256 EXACT_REVIEWED_SHA256
-```
-
-Launch the protected staged copy shown by the script. A rebuild/update changes
-its hash and requires a new reviewed grant. General shells, script hosts and
-command interpreters are not suitable grants. The helper script rejects common
-interpreter filenames. Applications with companion files, installers whose
-details hide the requested executable path, other UI languages, multi-monitor
-consent dialogs and credential prompts need separate validation; do not broaden
-matching rules to force approval. This is an executable permission, not a
-promise that every possible argument of an application is harmless.
+`Register-SecureDesktopApplication.ps1` is retained for legacy installations and
+optional protected-copy metadata. It does not grant or restrict consent under
+0.8.0. Existing `applications` configuration is accepted as diagnostic metadata.
+Other UI languages/profiles, multi-monitor consent dialogs and credential
+prompts need separate validation; unidentified controls remain refused.
 
 The Windows 11 consent profile also recognizes the actual `ExpandedTextLine`
 location text and the `ShowHideDetails` hyperlink. It requires the location
-prefix and does not search the program name or publisher for a matching path.
+prefix when reporting executable locations; locations are informational.
 Prompt GUIDs compare by value, including screenshots emitted in uppercase.
 
 ## Recordings and operator stop
@@ -150,7 +157,7 @@ SCM service. Only one registered normal HID controller can submit secure input.
 The public service API has no arbitrary shell, process launch, registry, general
 file write or credential entry endpoint. Native controller action logs remain
 in the configured runtime data root; consent actions also reach Windows Event
-Log. Only the administrator-controlled setup scripts change application grants.
+Log. Only administrator-controlled setup scripts replace the protected service.
 
 Stop the ordinary controller, then remove the optional service as administrator:
 
@@ -164,8 +171,8 @@ driver and optional third-party display/audio drivers untouched.
 ## Validation on another host
 
 1. Read-only SYSTEM helper status and a visually verified real consent screenshot.
-2. Denial of an unapproved executable, stale prompt and wrong input owner.
-3. One approved, harmless probe click, with its elevated exit code checked.
+2. Denial of an off-button click, stale prompt and wrong input owner.
+3. One unstaged, harmless probe click, with its elevated exit code checked.
 4. Recording Default -> UAC -> Default, decoded video/audio and transition counts.
 5. Owner disconnect/cancel, local operator stop and clean restoration of normal
    desktop control. Do not claim acceptance based on compiler/unit tests alone.

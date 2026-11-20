@@ -1,4 +1,6 @@
 #requires -RunAsAdministrator
+# Legacy 0.5.x staging/metadata utility. Policy 0.8.0 has no application
+# allowlist; running this script is not required to permit UAC consent.
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][ValidatePattern('^[a-z0-9][a-z0-9-]{0,39}$')][string]$Id,[Parameter(Mandatory=$true)][string]$Executable,[Parameter(Mandatory=$true)][ValidatePattern('^[a-fA-F0-9]{64}$')][string]$Sha256)
 $ErrorActionPreference='Stop'
