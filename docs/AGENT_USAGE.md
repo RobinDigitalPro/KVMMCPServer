@@ -2,6 +2,16 @@
 
 ## Relative gestures and recent media
 
+Version 0.8.1 prevents release from replaying a historical absolute coordinate
+after relative input. Use `hid_move_click_relative` for move-then-click. A plain
+`hid_click` without x/y clicks relatively at the current pointer; supplying x/y
+deliberately selects absolute input. Do not add absolute coordinates to a
+relative game action. Relative counts are not guaranteed guest-screen pixels.
+
+An acknowledged absolute button-up clears pending absolute release state.
+An uncertain down/up retains enough state for safe cleanup; unknown gestures
+are not replayed. Native helpers and the JavaScript fallback apply this rule.
+
 Version 0.8.0 adds two single-call relative gestures. Observe and focus the
 intended target first, then use a short lease covering the entire action:
 

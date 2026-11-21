@@ -140,6 +140,9 @@ namespace OpenDesktopHid
         private SafeFileHandle handle;
         private byte[] absolute;
         private bool driverHeartbeat;
+        private readonly Action<byte[]> packetWriter;
+        // Self-tests exercise the real Send/Release code without opening HID.
+        internal Device(Action<byte[]> writer) { if (writer == null) throw new ArgumentNullException("writer"); packetWriter = writer; }
         internal static List<Candidate> Find()
         {
             Guid guid; Native.HidD_GetHidGuid(out guid);
@@ -200,11 +203,15 @@ namespace OpenDesktopHid
         internal void Send(byte[] report)
         {
             byte[] packet = Wire.Pack(report);
+            // A failing write may already have reached the driver. Retain a
+            // possible button-down until a button-up is acknowledged.
+            if (report[0] == 3 && report[1] != 0) absolute = (byte[])report.Clone();
             Write(packet);
             if (report[0] == 3) absolute = (byte[])report.Clone();
         }
         private void Write(byte[] packet)
         {
+            if (packetWriter != null) { packetWriter((byte[])packet.Clone()); return; }
             int written;
             if (!Native.WriteFile(handle, packet, packet.Length, out written, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
             if (written != packet.Length) throw new InvalidOperationException("Partial HID write");
@@ -219,7 +226,10 @@ namespace OpenDesktopHid
         {
             Exception failure = null;
             List<byte[]> reports = new List<byte[]> { new byte[] { 4, 0, 0, 0, 0 }, new byte[] { 7, 0, 0, 0, 0, 0, 0, 0, 0 } };
-            if (absolute != null) { byte[] neutral = (byte[])absolute.Clone(); neutral[1] = 0; neutral[6] = 0; reports.Add(neutral); }
+            // Replaying a historical coordinate moves the pointer after a
+            // relative gesture, even across leases. Only release a held or
+            // uncertain absolute button; a completed absolute click needs none.
+            if (absolute != null && absolute[1] != 0) { byte[] neutral = (byte[])absolute.Clone(); neutral[1] = 0; neutral[6] = 0; reports.Add(neutral); }
             foreach (byte[] report in reports) { try { Send(report); } catch (Exception error) { if (failure == null) failure = error; } }
             if (failure != null) throw failure;
         }
@@ -344,9 +354,51 @@ namespace OpenDesktopHid
             }
             return 0;
         }
+        private static int MouseReleaseSelfTest()
+        {
+            int checks = 0;
+            Action<bool,string> verify = (condition,name) => { if (!condition) throw new Exception("Mouse release: " + name); checks++; };
+            Func<byte[],byte[]> report = packet => packet.Skip(2).Take(packet[1]).ToArray();
+            byte[] down = Wire.Decode("03017b00c80100"), up = Wire.Decode("03007b00c80100");
+            var sent = new List<byte[]>(); var device = new Device(packet => sent.Add(packet));
+            device.Release(); verify(sent.All(p => p[2] != 3), "fresh release stays relative");
+            device.Send(up); device.Send(Wire.Decode("040011f700")); device.Send(Wire.Decode("0401000000")); device.Send(Wire.Decode("0400000000"));
+            int begin = sent.Count; device.Release(); verify(sent.Skip(begin).All(p => p[2] != 3), "relative click does not replay old absolute position");
+            device.Send(down); device.Send(up); device.Send(Wire.Decode("0400010000"));
+            begin = sent.Count; device.Release(); verify(sent.Skip(begin).All(p => p[2] != 3), "completed absolute click needs no extra absolute release");
+            device.Send(Wire.Decode("0400020000")); begin = sent.Count; device.Release();
+            verify(sent.Skip(begin).All(p => p[2] != 3), "next owner does not inherit an absolute replay");
+            device.Send(down); begin = sent.Count; device.Release();
+            verify(sent.Skip(begin).Count(p => p[2] == 3) == 1 && report(sent.Last()).SequenceEqual(up), "held absolute button releases at its intended position");
+            begin = sent.Count; device.Release(); verify(sent.Skip(begin).All(p => p[2] != 3), "successful absolute release is idempotent");
+
+            bool fail = true; var uncertainSent = new List<byte[]>();
+            var uncertain = new Device(packet => { uncertainSent.Add(packet); if (fail) { fail = false; throw new IOException("simulated lost down acknowledgement"); } });
+            bool failed = false; try { uncertain.Send(down); } catch (IOException) { failed = true; }
+            uncertain.Release(); verify(failed && report(uncertainSent.Last()).SequenceEqual(up), "uncertain down retains required absolute release");
+
+            bool failUp = false; var retrySent = new List<byte[]>();
+            var retry = new Device(packet => { retrySent.Add(packet); if (failUp && packet[2] == 3 && packet[3] == 0) { failUp = false; throw new IOException("simulated lost up acknowledgement"); } });
+            retry.Send(down); failUp = true; failed = false;
+            try { retry.Send(up); } catch (IOException) { failed = true; }
+            begin = retrySent.Count; retry.Release(); verify(failed && retrySent.Skip(begin).Any(p => p[2] == 3), "uncertain up does not discard held state");
+            retry.Send(down); failUp = true; failed = false;
+            try { retry.Release(); } catch (IOException) { failed = true; }
+            begin = retrySent.Count; retry.Release(); verify(failed && retrySent.Skip(begin).Any(p => p[2] == 3), "failed release can be retried safely");
+            begin = retrySent.Count; retry.Release(); verify(retrySent.Skip(begin).All(p => p[2] != 3), "retry acknowledgement clears pending absolute state");
+
+            bool failRelative = false; var independentSent = new List<byte[]>();
+            var independent = new Device(packet => { independentSent.Add(packet); if (failRelative && packet[2] == 4) { failRelative = false; throw new IOException("simulated relative release failure"); } });
+            independent.Send(down); failRelative = true; failed = false; begin = independentSent.Count;
+            try { independent.Release(); } catch (IOException) { failed = true; }
+            verify(failed && independentSent.Skip(begin).Any(p => p[2] == 7) && report(independentSent.Last()).SequenceEqual(up), "one failed collection does not skip remaining releases");
+            verify(independentSent.Where(p => p[2] == 4).All(p => report(p).SequenceEqual(Wire.Decode("0400000000"))), "release never repeats relative displacement or wheel");
+            return checks;
+        }
         private static int SelfTest()
         {
             int passed = 0;
+            passed += MouseReleaseSelfTest();
             KeyboardText.SelfTest();passed++;
             var maximumPlan=new TextPlan{strokes=Enumerable.Range(0,KeyboardText.MaxTextStrokes).Select(_=>new TextStroke{key=101,modifiers=66}).ToArray(),context=new TextContext{window=new string('f',16),foregroundLayout=new string('f',16),capsLock=false},mappingLayout=new string('f',16),characters=KeyboardText.MaxTextUnits};
             string maximumReply=Json.Serialize(new{id=int.MaxValue,ok=true,inputSent=false,plan=maximumPlan});

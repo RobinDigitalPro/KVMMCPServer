@@ -34,3 +34,38 @@ test('a lost drag acknowledgement faults safely instead of replaying movement',a
   let writes=0,releases=0;const session=new HidSession({send:async()=>{if(++writes===2)throw new Error('lost ACK');},releaseInput:async()=>{releases++;}}),lease=await session.acquire('fault',60000);
   await assert.rejects(session.dragRelative(lease.token,{dx:1,durationMs:1,holdMs:0}),/lost ACK/);assert.equal(writes,2);assert.ok(releases>=1);assert.equal(session.status().faulted,true);assert.equal(session.status().owner,null);
 });
+for(const prior of ['move','completed-click','previous-owner'])test(`relative click and release never replay an absolute ${prior}`,async()=>{
+  const {session,sent}=fixture();let lease=await session.acquire('first',15000);
+  if(prior==='completed-click')await session.click(lease.token,{x:12000,y:16000,durationMs:1});
+  else await session.moveAbsolute(lease.token,{x:12000,y:16000});
+  if(prior==='previous-owner'){await session.release(lease.token);lease=await session.acquire('second',15000);}
+  const begin=sent.length;await session.moveClickRelative(lease.token,{dx:17,dy:-9,pauseMs:0,durationMs:1});await session.release(lease.token);
+  assert.ok(sent.slice(begin).every(r=>r[0]!==3));assert.deepEqual(sum(sent.slice(begin).filter(r=>r[0]===4)),{dx:17,dy:-9});
+});
+test('relative neutral does not hide a button still held in the absolute collection',async()=>{
+  const {session,sent}=fixture(),lease=await session.acquire('collections',15000);
+  await session.moveAbsolute(lease.token,{x:123,y:456,buttons:1});await session.moveRelative(lease.token,{buttons:0});const begin=sent.length;
+  await assert.rejects(session.moveClickRelative(lease.token,{dx:10}),/held mouse/);assert.equal(sent.length,begin);
+  await session.release(lease.token);assert.equal(sent.at(-1).toString('hex'),'03007b00c80100');
+});
+test('lost absolute button-up acknowledgement retains the pending release',async()=>{
+  const sent=[];let failUp=true;
+  const session=new HidSession({send:async r=>{sent.push(Buffer.from(r));if(r[0]===3&&!r[1]&&failUp){failUp=false;throw new Error('lost up ack');}}}),lease=await session.acquire('uncertain-up',15000);
+  await session.moveAbsolute(lease.token,{x:123,y:456,buttons:1});await assert.rejects(session.moveAbsolute(lease.token,{x:123,y:456,buttons:0}),/lost up ack/);
+  assert.equal(sent.filter(r=>r[0]===3&&!r[1]).length,2);assert.equal(session.status().owner,null);
+});
+test('lost absolute movement acknowledgement without held buttons does not invent an absolute release',async()=>{
+  const sent=[];const session=new HidSession({send:async r=>{sent.push(Buffer.from(r));if(sent.length===1)throw new Error('lost move ack');}}),lease=await session.acquire('uncertain-move',15000);
+  await assert.rejects(session.moveAbsolute(lease.token,{x:123,y:456}),/lost move ack/);assert.equal(sent.filter(r=>r[0]===3).length,1);
+});
+test('native desktop reset forgets held absolute state before the next relative gesture',async()=>{
+  let epoch=0;const {session,sent}=fixture({status:()=>({inputResetEpoch:epoch})}),lease=await session.acquire('desktop-reset',15000);
+  await session.moveAbsolute(lease.token,{x:123,y:456,buttons:1});epoch++;const begin=sent.length;
+  await session.moveClickRelative(lease.token,{dx:5,pauseMs:0,durationMs:1});await session.release(lease.token);assert.ok(sent.slice(begin).every(r=>r[0]!==3));
+});
+test('failed absolute cleanup retains enough state for a later emergency release',async()=>{
+  const sent=[];let fail=false;
+  const session=new HidSession({send:async r=>{sent.push(Buffer.from(r));if(fail&&r[0]===3&&!r[1])throw new Error('release failed');}}),lease=await session.acquire('retry-release',15000);
+  await session.moveAbsolute(lease.token,{x:123,y:456,buttons:1});fail=true;await assert.rejects(session.release(lease.token),/release failed/);fail=false;
+  await session.emergencyStop();assert.equal(sent.at(-1).toString('hex'),'03007b00c80100');
+});

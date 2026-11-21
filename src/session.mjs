@@ -8,7 +8,7 @@ import { absoluteReport, relativeReports, keyboardReport } from './reports.mjs';
 export class HidSession {
   #transport; #clock; #lease; #tail = Promise.resolve(); #absolute; #faulted = false; #operatorStopped = false;
   #keyboard = { modifiers: 0, keys: [] }; #keyboardEpoch = 0; #press;
-  #mouseButtons = 0; #mouseEpoch = 0;
+  #mouseButtons = 0; #mouseEpoch = 0; #absoluteButtons = 0; #relativeButtons = 0;
   // Keep epoch-style timestamps while measuring leases monotonically, so a
   // Windows clock correction cannot extend a controller's permitted lifetime.
   constructor(transport, { clock = () => performance.timeOrigin + performance.now() } = {}) {
@@ -53,6 +53,20 @@ export class HidSession {
     }
   }
   assertLease(token) { return this.#queue(() => this.#check(token)); }
+  #clearMouse() { this.#mouseButtons = 0; this.#absoluteButtons = 0; this.#relativeButtons = 0; this.#absolute = undefined; }
+  #syncMouse() {
+    const epoch = this.#transport.status?.().inputResetEpoch ?? 0;
+    if (epoch !== this.#mouseEpoch) { this.#clearMouse(); this.#mouseEpoch = epoch; }
+    return epoch;
+  }
+  #rememberMouse(report, acknowledged) {
+    if (![3, 4].includes(report[0]) || (!acknowledged && !report[1])) return;
+    // Preserve a possible down before awaiting its ACK; only a confirmed up
+    // clears it. Keep the two HID mouse collections separate.
+    if (report[0] === 3) { this.#absolute = { x: report.readUInt16LE(2), y: report.readUInt16LE(4) }; this.#absoluteButtons = report[1]; }
+    else this.#relativeButtons = report[1];
+    this.#mouseButtons = this.#absoluteButtons | this.#relativeButtons;
+  }
   async #send(reports, signal) {
     let acknowledgement;
     for (const report of reports) {
@@ -65,9 +79,11 @@ export class HidSession {
         throw new Error('lease expired');
       }
       if (this.#press?.deadline && this.#clock() >= this.#press.deadline) throw new Error('Text batch duration limit reached; input released');
-      try { acknowledgement = await this.#transport.send(report); }
+      if ([3, 4].includes(report[0])) this.#syncMouse();
+      this.#rememberMouse(report, false);
+      try { acknowledgement = await this.#transport.send(report); this.#rememberMouse(report, true); }
       catch (error) {
-        if (error.policyRefusal === true) { await this.#transport.releaseInput?.(); this.#keyboard = { modifiers: 0, keys: [] }; this.#mouseButtons = 0; throw error; }
+        if (error.policyRefusal === true) { await this.#transport.releaseInput?.(); this.#keyboard = { modifiers: 0, keys: [] }; this.#clearMouse(); throw error; }
         this.#faulted = true;
         // Attempt every neutral report even if one transport write fails.
         await this.#release().catch(() => {});
@@ -77,16 +93,13 @@ export class HidSession {
     return acknowledgement;
   }
   moveRelative(token, options, { signal } = {}) {
-    return this.#queue(async () => { await this.#check(token); await this.#send(relativeReports(options), signal); this.#mouseButtons = options?.buttons ?? 0; this.#mouseEpoch = this.#transport.status?.().inputResetEpoch ?? 0; });
+    return this.#queue(async () => { await this.#check(token); await this.#send(relativeReports(options), signal); });
   }
   moveAbsolute(token, options, { signal } = {}) {
     return this.#queue(async () => {
       await this.#check(token);
       const report = absoluteReport(options);
-      // Remember the intended location even if a successful write loses its ACK.
-      this.#absolute = { x: options.x, y: options.y };
       await this.#send([report], signal);
-      this.#mouseButtons = options.buttons ?? 0; this.#mouseEpoch = this.#transport.status?.().inputResetEpoch ?? 0;
     });
   }
   keyboard(token, options, { signal } = {}) {
@@ -162,19 +175,16 @@ export class HidSession {
       if (!['left', 'right', 'middle'].includes(button)) throw new RangeError('button must be left, right or middle');
       if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 1000) throw new RangeError('durationMs must be 1..1000');
       if ((x === undefined) !== (y === undefined)) throw new Error('Provide both x and y, or neither');
-      const epoch = this.#transport.status?.().inputResetEpoch ?? 0;
-      if (epoch !== this.#mouseEpoch) { this.#mouseButtons = 0; this.#mouseEpoch = epoch; }
+      const epoch = this.#syncMouse();
       if (this.#mouseButtons) throw new Error('Release held mouse buttons before clicking');
       const buttons = { left: 1, right: 2, middle: 4 }[button];
       const reports = x === undefined ? [relativeReports({ buttons })[0], relativeReports()[0]] : [absoluteReport({ x, y, buttons }), absoluteReport({ x, y })];
       this.#requireTime(durationMs);
-      if (x !== undefined) this.#absolute = { x, y };
       return this.#atomic(token, signal, async combined => {
         const started = performance.now(), acknowledgement = await this.#send([reports[0]], combined);
-        this.#mouseButtons = buttons;
         const secureConsent = acknowledgement?.secureDelegated === true;
         if (!secureConsent) await this.#wait(token, durationMs, combined, epoch);
-        await this.#send([reports[1]], combined); this.#mouseButtons = 0;
+        await this.#send([reports[1]], combined);
         return { button, durationMs, elapsedMs: Math.round((performance.now() - started) * 100) / 100, secureConsent, durationControlledByService: secureConsent };
       });
     });
@@ -185,8 +195,7 @@ export class HidSession {
     if (native.inputPaused || native.desktop === 'Winlogon') {
       const error = new Error('Relative gestures require the ordinary desktop'); error.policyRefusal = true; throw error;
     }
-    const epoch = native.inputResetEpoch ?? 0;
-    if (epoch !== this.#mouseEpoch) { this.#mouseButtons = 0; this.#mouseEpoch = epoch; }
+    const epoch = this.#syncMouse();
     if (this.#mouseButtons) throw new Error('Release held mouse buttons before a relative gesture');
     return { epoch, mask: { left: 1, right: 2, middle: 4 }[button] };
   }
@@ -201,9 +210,9 @@ export class HidSession {
         const started = performance.now();
         await this.#send(moves, combined);
         await this.#wait(token, pauseMs, combined, epoch);
-        await this.#send(relativeReports({ buttons: mask }), combined); this.#mouseButtons = mask;
+        await this.#send(relativeReports({ buttons: mask }), combined);
         await this.#wait(token, durationMs, combined, epoch);
-        await this.#send(relativeReports(), combined); this.#mouseButtons = 0;
+        await this.#send(relativeReports(), combined);
         return { dx, dy, button, pauseMs, durationMs, elapsedMs: Math.round((performance.now() - started) * 100) / 100, released: true };
       }, 5000);
     });
@@ -218,7 +227,7 @@ export class HidSession {
       this.#requireTime(durationMs + holdMs + steps * 2);
       return this.#atomic(token, signal, async combined => {
         const started = performance.now();
-        await this.#send(relativeReports({ buttons: mask }), combined); this.#mouseButtons = mask;
+        await this.#send(relativeReports({ buttons: mask }), combined);
         await this.#wait(token, holdMs, combined, epoch);
         const begin = this.#clock(); let previousX = 0, previousY = 0;
         for (let step = 1; step <= steps; step++) {
@@ -227,7 +236,7 @@ export class HidSession {
           previousX = x; previousY = y;
           await this.#wait(token, Math.max(0, begin + durationMs * step / steps - this.#clock()), combined, epoch);
         }
-        await this.#send(relativeReports(), combined); this.#mouseButtons = 0;
+        await this.#send(relativeReports(), combined);
         return { dx, dy, button, durationMs, holdMs, steps, elapsedMs: Math.round((performance.now() - started) * 100) / 100, released: true };
       }, 6500);
     });
@@ -294,17 +303,18 @@ export class HidSession {
     });
   }
   async #release() {
+    const absoluteUp = this.#absoluteButtons && this.#absolute ? absoluteReport(this.#absolute) : undefined;
     this.#lease = undefined;
     this.#keyboard = { modifiers: 0, keys: [] };
     this.#mouseButtons = 0;
     if (typeof this.#transport.releaseInput === 'function') {
-      try { await this.#transport.releaseInput(); return; } catch (error) { this.#faulted = true; throw error; }
+      try { await this.#transport.releaseInput(); this.#clearMouse(); return; } catch (error) { this.#faulted = true; throw error; }
     }
     const reports = [relativeReports()[0], keyboardReport()];
-    if (this.#absolute) reports.push(absoluteReport(this.#absolute));
+    if (absoluteUp) reports.push(absoluteUp);
     let failure;
     for (const report of reports) {
-      try { await this.#transport.send(report); } catch (error) { failure ??= error; }
+      try { await this.#transport.send(report); this.#rememberMouse(report, true); } catch (error) { failure ??= error; }
     }
     if (failure) { this.#faulted = true; throw failure; }
   }

@@ -1,5 +1,24 @@
 # Desktop acceptance
 
+## Relative mouse release, 0.8.1
+
+The isolated suite passes 91 JavaScript/MCP tests. The native helper passes 35
+self-checks without opening HID, including twelve checks of its actual
+Send/Release implementation through an in-memory writer. New tests cover stale
+absolute coordinates after relative clicks, completed absolute clicks, previous
+owners, distinct held mouse collections, desktop resets, uncertain down/up
+writes and continued/retryable release after failure. Held absolute buttons
+still release at the intended position; completed absolute movement/clicks no
+longer cause an absolute report during release.
+
+The kernel watchdog and UAC-service installation are unchanged. On-host
+acceptance uses a dedicated observed receiver and stores receipts outside the
+repository. A packet-level proof does not by itself prove VMware game-cursor
+behavior; any VMware-specific observation must be reported separately.
+
+The [capture-source proposal](CAPTURE_SOURCE_PROPOSAL.md) is not implemented in
+this patch release.
+
 ## Relative gestures and recent-media buffer, 0.8.0
 
 The ordinary suite passes 83 JavaScript tests, including both gestures,
