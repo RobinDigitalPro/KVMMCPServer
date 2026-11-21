@@ -1,5 +1,15 @@
 # Local agent use
 
+## Capture source selection
+
+Version 0.9.0 adds the same optional fullscreen/window/region `source` to
+`hid_capture`, `screen_record_start`, and visual `media_buffer_start`.
+Cropping happens before CPU readback. Omission retains fullscreen/primary.
+See [capture sources](CAPTURE_SOURCES.md) for examples, image-to-host coordinate
+mapping and source pinning. Exact window titles identify host windows; region
+coordinates are physical host pixels. Audio remains host-wide system loopback.
+Read frame age/reuse metadata; a new request does not guarantee a new scene frame.
+
 ## Relative gestures and recent media
 
 Version 0.8.1 prevents release from replaying a historical absolute coordinate

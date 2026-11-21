@@ -79,115 +79,7 @@ struct Frame { UINT width = 0, height = 0; std::vector<BYTE> pixels; POINT curso
 #include "SystemAudio.h"
 #include "../test/SyntheticSystemAudio.h"
 
-class Capture {
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    ComPtr<IDXGIOutputDuplication> duplication;
-    ComPtr<ID3D11Texture2D> staging;
-    Frame cached;
-    bool separatePointer = true;
-    std::wstring lastDesktop;
-public:
-    ComPtr<IWICImagingFactory> wic;
-    Capture() { Check(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)), "WIC factory"); }
-    void Reset() { duplication.Reset(); staging.Reset(); context.Reset(); device.Reset(); cached = {}; }
-    void Initialize() {
-        if(RequireConsole()!=L"Default")throw std::runtime_error("default_desktop_required_for_dxgi");
-        // Select the primary monitor's adapter, including hybrid-GPU systems.
-        ComPtr<IDXGIFactory1> factory; Check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "DXGI factory");
-        for (UINT a = 0;; ++a) {
-            ComPtr<IDXGIAdapter1> adapter;
-            if (factory->EnumAdapters1(a, &adapter) == DXGI_ERROR_NOT_FOUND) break;
-            for (UINT o = 0;; ++o) {
-                ComPtr<IDXGIOutput> output;
-                if (adapter->EnumOutputs(o, &output) == DXGI_ERROR_NOT_FOUND) break;
-                DXGI_OUTPUT_DESC desc = {}; Check(output->GetDesc(&desc), "output description");
-                if (!desc.AttachedToDesktop || desc.DesktopCoordinates.left != 0 || desc.DesktopCoordinates.top != 0) continue;
-                MONITORINFO info = { sizeof(MONITORINFO) };
-                if (!GetMonitorInfoW(desc.Monitor, &info) || !(info.dwFlags & MONITORINFOF_PRIMARY)) continue;
-                Check(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context), "D3D device");
-                ComPtr<IDXGIOutput1> modern; Check(output.As(&modern), "DXGI output");
-                Check(modern->DuplicateOutput(device.Get(), &duplication), "desktop duplication");
-                return;
-            }
-        }
-        throw std::runtime_error("primary_display_unavailable");
-    }
-    Frame Grab(bool cursor) {
-        const std::wstring desktop=RequireConsole();
-        if(desktop!=lastDesktop){Reset();lastDesktop=desktop;}
-        if(desktop==L"Winlogon"){Frame frame=SecureDesktopFrame(cursor);if(RequireConsole()!=desktop)throw std::runtime_error("desktop_changed_during_secure_capture");return frame;}
-        if (!duplication) Initialize();
-        ComPtr<IDXGIResource> resource; DXGI_OUTDUPL_FRAME_INFO info = {};
-        HRESULT hr = duplication->AcquireNextFrame(cached.pixels.empty() ? 1000 : 0, &info, &resource);
-        if (hr == DXGI_ERROR_ACCESS_LOST) { Reset(); throw std::runtime_error("display_configuration_changed"); }
-        if (hr != DXGI_ERROR_WAIT_TIMEOUT) {
-            Check(hr, "acquire desktop frame");
-            try {
-                if (info.LastMouseUpdateTime.QuadPart != 0) separatePointer = info.PointerPosition.Visible != FALSE;
-                ComPtr<ID3D11Texture2D> texture; Check(resource.As(&texture), "desktop texture");
-                D3D11_TEXTURE2D_DESC desc; texture->GetDesc(&desc);
-                if(!desc.Width||!desc.Height||static_cast<UINT64>(desc.Width)*desc.Height>33554432)throw std::runtime_error("source_display_pixel_limit");
-                DXGI_OUTDUPL_DESC outputDesc; duplication->GetDesc(&outputDesc);
-                if (outputDesc.Rotation != DXGI_MODE_ROTATION_IDENTITY && outputDesc.Rotation != DXGI_MODE_ROTATION_UNSPECIFIED) throw std::runtime_error("rotated_display_not_supported");
-                if (!staging || cached.width != desc.Width || cached.height != desc.Height) {
-                    desc.BindFlags = 0; desc.MiscFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.Usage = D3D11_USAGE_STAGING;
-                    staging.Reset(); Check(device->CreateTexture2D(&desc, nullptr, &staging), "staging texture");
-                    cached.width = desc.Width; cached.height = desc.Height; cached.pixels.resize(static_cast<size_t>(desc.Width) * desc.Height * 4);
-                }
-                context->CopyResource(staging.Get(), texture.Get());
-                D3D11_MAPPED_SUBRESOURCE mapped; Check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "map desktop texture");
-                for (UINT y = 0; y < cached.height; ++y) memcpy(cached.pixels.data() + static_cast<size_t>(y) * cached.width * 4, static_cast<const BYTE*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch, cached.width * 4);
-                context->Unmap(staging.Get(), 0);
-            } catch (...) { duplication->ReleaseFrame(); throw; }
-            Check(duplication->ReleaseFrame(), "release desktop frame");
-        }
-        if(RequireConsole()!=desktop){Reset();throw std::runtime_error("desktop_changed_during_capture");}
-        if (cached.pixels.empty()) throw std::runtime_error("desktop_frame_unavailable");
-        Frame frame = cached; GetCursorPos(&frame.cursor);
-        if (cursor && !separatePointer) frame.cursorIncluded = true;
-        if (cursor && separatePointer) {
-            CURSORINFO pointer = { sizeof(CURSORINFO) };
-            // Desktop duplication may already include a hardware-composited pointer.
-            if (GetCursorInfo(&pointer) && (pointer.flags & CURSOR_SHOWING)) {
-                ICONINFO icon = {};
-                if (GetIconInfo(pointer.hCursor, &icon)) {
-                    BITMAPINFO bitmap = {}; bitmap.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bitmap.bmiHeader.biWidth = frame.width; bitmap.bmiHeader.biHeight = -static_cast<LONG>(frame.height); bitmap.bmiHeader.biPlanes = 1; bitmap.bmiHeader.biBitCount = 32; bitmap.bmiHeader.biCompression = BI_RGB;
-                    void* pixels = nullptr; HBITMAP dib = CreateDIBSection(nullptr, &bitmap, DIB_RGB_COLORS, &pixels, nullptr, 0); HDC dc = CreateCompatibleDC(nullptr);
-                    if (dib && dc && pixels) { HGDIOBJ old = SelectObject(dc, dib); memcpy(pixels, frame.pixels.data(), frame.pixels.size()); DrawIconEx(dc, pointer.ptScreenPos.x - icon.xHotspot, pointer.ptScreenPos.y - icon.yHotspot, pointer.hCursor, 0, 0, 0, nullptr, DI_NORMAL); GdiFlush(); memcpy(frame.pixels.data(), pixels, frame.pixels.size()); SelectObject(dc, old); frame.cursorIncluded = true; }
-                    if (dc) DeleteDC(dc); if (dib) DeleteObject(dib); if (icon.hbmMask) DeleteObject(icon.hbmMask); if (icon.hbmColor) DeleteObject(icon.hbmColor);
-                }
-            }
-        }
-        // GDI cursor drawing can clear alpha in the icon rectangle. Make the
-        // desktop opaque before WIC scaling, otherwise the cursor scales black.
-        for (size_t i = 3; i < frame.pixels.size(); i += 4) frame.pixels[i] = 255;
-        return frame;
-    }
-    Frame Scale(const Frame& frame, UINT width, bool even) {
-        Frame result = frame;
-        result.width = width ? std::min(width, frame.width) : frame.width;
-        result.height = static_cast<UINT>(static_cast<uint64_t>(frame.height) * result.width / frame.width);
-        if (even) { result.width &= ~1U; result.height &= ~1U; }
-        if (result.width < 2 || result.height < 2) throw std::runtime_error("invalid_frame_dimensions");
-        if (result.width == frame.width && result.height == frame.height) return result;
-        ComPtr<IWICBitmap> bitmap; Check(wic->CreateBitmapFromMemory(frame.width, frame.height, GUID_WICPixelFormat32bppBGRA, frame.width * 4, static_cast<UINT>(frame.pixels.size()), const_cast<BYTE*>(frame.pixels.data()), &bitmap), "scale source");
-        ComPtr<IWICBitmapScaler> scaler; Check(wic->CreateBitmapScaler(&scaler), "image scaler"); Check(scaler->Initialize(bitmap.Get(), result.width, result.height, WICBitmapInterpolationModeFant), "scale frame");
-        result.pixels.resize(static_cast<size_t>(result.width) * result.height * 4); Check(scaler->CopyPixels(nullptr, result.width * 4, static_cast<UINT>(result.pixels.size()), result.pixels.data()), "scaled pixels"); return result;
-    }
-    void Save(const Frame& frame, const fs::path& path, bool jpeg) {
-        if (fs::exists(path)) throw std::runtime_error("output_already_exists");
-        ComPtr<IWICStream> stream; Check(wic->CreateStream(&stream), "image stream"); Check(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE), "image output");
-        ComPtr<IWICBitmapEncoder> encoder; Check(wic->CreateEncoder(jpeg ? GUID_ContainerFormatJpeg : GUID_ContainerFormatPng, nullptr, &encoder), "image encoder"); Check(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache), "initialize image encoder");
-        ComPtr<IWICBitmapFrameEncode> output; ComPtr<IPropertyBag2> properties; Check(encoder->CreateNewFrame(&output, &properties), "image frame");
-        if (jpeg) { PROPBAG2 option = {}; option.pstrName = const_cast<wchar_t*>(L"ImageQuality"); VARIANT value; VariantInit(&value); value.vt = VT_R4; value.fltVal = 0.85f; Check(properties->Write(1, &option, &value), "JPEG quality"); }
-        Check(output->Initialize(properties.Get()), "initialize image frame"); Check(output->SetSize(frame.width, frame.height), "image dimensions");
-        WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR; Check(output->SetPixelFormat(&format), "image pixel format");
-        ComPtr<IWICBitmap> bitmap; Check(wic->CreateBitmapFromMemory(frame.width, frame.height, GUID_WICPixelFormat32bppBGRA, frame.width * 4, static_cast<UINT>(frame.pixels.size()), const_cast<BYTE*>(frame.pixels.data()), &bitmap), "image bitmap");
-        ComPtr<IWICFormatConverter> converter; Check(wic->CreateFormatConverter(&converter), "pixel converter"); Check(converter->Initialize(bitmap.Get(), format, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom), "convert pixels");
-        Check(output->WriteSource(converter.Get(), nullptr), "write image"); Check(output->Commit(), "commit frame"); Check(encoder->Commit(), "commit image");
-    }
-};
+#include "CaptureEngine.h"
 
 class Recording {
     std::unique_ptr<SystemAudio> systemAudio;
@@ -234,13 +126,13 @@ public:
     ComPtr<IMFSinkWriter> writer; DWORD stream = 0;
     std::string id, startedUtc; fs::path partial, final;
     Clock::time_point start, next; int seconds = 0, fps = 0, maxWidth = 0, bitrate = 0;
-    UINT width = 0, height = 0, sourceWidth = 0, sourceHeight = 0; unsigned long frames = 0; LONGLONG mediaEnd = 0;
+    UINT width = 0, height = 0, sourceWidth = 0, sourceHeight = 0; unsigned long frames = 0; LONGLONG mediaEnd = 0;std::string sourceInfo="\"source\":null";
     unsigned long secureFrames=0,transitionFrames=0,desktopTransitions=0;std::string lastFrameDesktop;Clock::time_point transitionSince;
     bool active() const { return writer != nullptr; }
     void Begin(Capture& capture, const fs::path& root, const std::string& identity, int duration, int rate, int size, int bits, bool includeAudio = true) {
         if (active()) throw std::runtime_error("recording_already_active");
         Identifier(identity); if (duration < 1 || duration > MaximumSeconds) throw std::runtime_error("recording_limit_600_seconds");
-        Frame source = capture.Grab(true), first = capture.Scale(source, size, true);
+        Frame source = capture.Grab(true);sourceInfo=capture.Metadata(source);Frame first = capture.Scale(source, size, true);
         id = identity; seconds = duration; fps = rate; maxWidth = size; bitrate = bits; width = first.width; height = first.height; sourceWidth = source.width; sourceHeight = source.height;
         frames = 0; mediaEnd = 0; audioFrames = 0; audioCapturedFrames = 0; audioPeak = 0; audioRequested = includeAudio;
         secureFrames=transitionFrames=desktopTransitions=0;lastFrameDesktop.clear();transitionSince={};
@@ -310,7 +202,7 @@ public:
         Check(sample->SetSampleDuration(duration), "sample duration"); Check(writer->WriteSample(stream, sample.Get()), "encode video sample"); mediaEnd = timestamp + duration; ++frames;
     }
     std::string Status(const char* state, const std::string& reason = "") const {
-        std::ostringstream out; out << "\"recordingId\":" << Json(id) << ",\"state\":" << Json(state) << ",\"reason\":" << Json(reason) << ",\"startedUtc\":" << Json(startedUtc) << ",\"maxSeconds\":" << seconds << ",\"fps\":" << fps << ",\"width\":" << width << ",\"height\":" << height << ",\"frames\":" << frames << ",\"durationMs\":" << mediaEnd / 10000 << ",\"path\":" << Json(Utf8(final.wstring())) << ",\"partialPath\":" << Json(Utf8(partial.wstring())) << ",\"audio\":" << (audioEnabled ? "true" : "false") << ",\"systemAudioRequested\":" << (audioRequested ? "true" : "false") << ",\"audioSource\":" << Json(systemAudio->Source()) << ",\"audioStatus\":" << Json(audioState) << ",\"audioReason\":" << Json(audioReason) << ",\"audioSampleRate\":" << (audioEnabled ? SystemAudio::Rate : 0) << ",\"audioChannels\":" << (audioEnabled ? SystemAudio::Channels : 0) << ",\"audioFrames\":" << audioFrames << ",\"audioCapturedFrames\":" << audioCapturedFrames << ",\"audioPeak\":" << audioPeak << ",\"microphone\":false,\"cursorIncludedInImage\":true,\"secureDesktopFrames\":" << secureFrames << ",\"transitionFrames\":" << transitionFrames << ",\"desktopTransitions\":" << desktopTransitions; return out.str();
+        std::ostringstream out; out << "\"recordingId\":" << Json(id) << ",\"state\":" << Json(state) << ",\"reason\":" << Json(reason) << ",\"startedUtc\":" << Json(startedUtc) << ",\"maxSeconds\":" << seconds << ",\"fps\":" << fps << ",\"width\":" << width << ",\"height\":" << height << ",\"frames\":" << frames << ",\"durationMs\":" << mediaEnd / 10000 << ",\"path\":" << Json(Utf8(final.wstring())) << ",\"partialPath\":" << Json(Utf8(partial.wstring())) << ",\"audio\":" << (audioEnabled ? "true" : "false") << ",\"systemAudioRequested\":" << (audioRequested ? "true" : "false") << ",\"audioSource\":" << Json(systemAudio->Source()) << ",\"audioStatus\":" << Json(audioState) << ",\"audioReason\":" << Json(audioReason) << ",\"audioSampleRate\":" << (audioEnabled ? SystemAudio::Rate : 0) << ",\"audioChannels\":" << (audioEnabled ? SystemAudio::Channels : 0) << ",\"audioFrames\":" << audioFrames << ",\"audioCapturedFrames\":" << audioCapturedFrames << ",\"audioPeak\":" << audioPeak << ",\"microphone\":false,\"cursorIncludedInImage\":true,\"secureDesktopFrames\":" << secureFrames << ",\"transitionFrames\":" << transitionFrames << ",\"desktopTransitions\":" << desktopTransitions << "," << sourceInfo; return out.str();
     }
     void Finish(const char* state, const std::string& reason) {
         if (!active()) return;
@@ -327,7 +219,7 @@ public:
         PumpAudio();
         if (Clock::now() >= next) {
             Frame source;
-            try{source=capture.Grab(true);transitionSince={};}
+            try{source=capture.Grab(true);sourceInfo=capture.Metadata(source);transitionSince={};}
             catch(const std::exception& error){const std::string reason=error.what();bool transient=reason=="secure_desktop_busy"||reason=="secure_desktop_capture_unavailable"||reason=="desktop_changed_during_secure_capture"||reason=="desktop_changed_during_capture"||reason=="display_configuration_changed"||reason=="desktop_frame_unavailable";
                 if(!transient)throw;const auto now=Clock::now();if(transitionSince==Clock::time_point{})transitionSince=now;if(now-transitionSince>std::chrono::seconds(reason=="secure_desktop_busy"?5:1))throw;
                 source.width=sourceWidth;source.height=sourceHeight;source.desktop="Transition";source.pixels.resize(static_cast<size_t>(sourceWidth)*sourceHeight*4,0);for(size_t i=3;i<source.pixels.size();i+=4)source.pixels[i]=255;
@@ -374,6 +266,18 @@ public:
 };
 
 int wmain(int argc, wchar_t** argv) {
+    if(argc==2&&std::wstring(argv[1])==L"self-test-sources"){
+        try{
+            int checks=0;auto require=[&](bool value){if(!value)throw std::runtime_error("source_contract_failed");checks++;};
+            auto full=CaptureSelection::Parse("fullscreen");auto box=full.Box(1920,1080);require(box.right==1920&&box.bottom==1080);
+            auto region=CaptureSelection::Parse("region:10:20:320:240");box=region.Box(1920,1080);require(box.left==10&&box.top==20&&box.right==330&&box.bottom==260);
+            auto window=CaptureSelection::Parse("window:123:client:54657374");require(window.mode=="window"&&window.title==L"Test"&&window.pid==123);
+            for(const auto* text:{"region:-1:0:10:10","region:0:0:1:10","region:32767:32767:32768:32768","window:1:client:00","window:1:client:ff","window:0:wrong:54","window:4294967296:client:54","fullscreen:extra"}){
+                bool refused=false;try{auto invalid=CaptureSelection::Parse(text);if(invalid.mode=="region")invalid.Box(1920,1080);}catch(const std::exception&){refused=true;}require(refused);
+            }
+            Emit("{\"ok\":true,\"checks\":"+std::to_string(checks)+",\"inputSent\":false,\"captureOpened\":false}");return 0;
+        }catch(const std::exception& error){Emit("{\"ok\":false,\"error\":"+Json(error.what())+"}");return 1;}
+    }
     if(argc==2&&std::wstring(argv[1])==L"self-test-history"){
         try{
             Check(CoInitializeEx(nullptr,COINIT_MULTITHREADED),"COM");Check(MFStartup(MF_VERSION),"Media Foundation");
@@ -385,7 +289,11 @@ int wmain(int argc, wchar_t** argv) {
             EncodedHistory bad(false,true);if(SUCCEEDED(bad.Push(false,packet(-1,1).Get())))throw std::runtime_error("timestamp_guard_failed");
             EncodedHistory large(false,true);if(SUCCEEDED(large.Push(false,packet(0,EncodedHistory::MaximumPacket+1).Get())))throw std::runtime_error("packet_guard_failed");
             if(MediaBudget::MemoryAdmitted(128ULL*1024*1024)||!MediaBudget::MemoryAdmitted(1024ULL*1024*1024))throw std::runtime_error("memory_admission_guard_failed");
-            Emit("{\"ok\":true,\"checks\":5,\"inputSent\":false,\"captureOpened\":false,\"byteCap\":33554432,\"maxSeconds\":30}");return 0;
+            EncodedHistory aligned(true,true);for(int n=0;n<2;n++){auto p=packet(n*2000000,4);p->SetSampleDuration(2000000);p->SetUINT32(MFSampleExtension_CleanPoint,TRUE);Check(aligned.Push(true,p.Get()),"aligned video");}
+            Check(aligned.Push(false,packet(0,4).Get()),"aligned initial audio");Check(aligned.Push(false,packet(3800000,4).Get()),"unaligned audio end");
+            const auto shortClip=aligned.Snapshot(0.2);if(shortClip.packets.empty()||!std::any_of(shortClip.packets.begin(),shortClip.packets.end(),[](const EncodedPacket& p){return p.video;}))throw std::runtime_error("partial_keyframe_export_failed");
+            EncodedHistory warming(true,true);auto p=packet(0,4);p->SetSampleDuration(2000000);p->SetUINT32(MFSampleExtension_CleanPoint,TRUE);Check(warming.Push(true,p.Get()),"warming video");Check(warming.Push(false,packet(1800000,4).Get()),"warming audio");if(!warming.Snapshot(1).packets.empty())throw std::runtime_error("incomplete_video_must_wait");
+            Emit("{\"ok\":true,\"checks\":7,\"inputSent\":false,\"captureOpened\":false,\"byteCap\":33554432,\"maxSeconds\":30}");return 0;
         }catch(const std::exception& error){Emit("{\"ok\":false,\"error\":"+Json(error.what())+"}");return 1;}
     }
     if(argc==7&&std::wstring(argv[1])==L"guarded-self-test-buffer"&&std::wstring(argv[2])==L"--data-root"){
@@ -501,7 +409,7 @@ int wmain(int argc, wchar_t** argv) {
         Capture capture; Recording recording;std::unique_ptr<RecentMedia> recent;RecentExport exporter;MediaBudget budget;
         const auto bufferEvent=[&](const char* type){if(recent)Emit("{\"type\":"+Json(type)+","+recent->Status()+","+budget.Status()+"}");};
         const auto stopBuffer=[&](const std::string& reason){if(recent&&recent->Active()){recent->Stop(reason);bufferEvent("buffer_state");}};
-        Emit("{\"type\":\"ready\",\"workerPid\":"+std::to_string(GetCurrentProcessId())+",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600,\"systemAudioSupported\":true,\"bufferSupported\":true,\"protocolVersion\":3,"+budget.Status()+"}");
+        Emit("{\"type\":\"ready\",\"workerPid\":"+std::to_string(GetCurrentProcessId())+",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600,\"systemAudioSupported\":true,\"bufferSupported\":true,\"protocolVersion\":4,"+budget.Status()+"}");
         HANDLE input = GetStdHandle(STD_INPUT_HANDLE); std::string pending; bool quitting = false; auto lastPing = Clock::now(), progress = lastPing;
         while (!quitting) {
             DWORD available = 0;
@@ -521,15 +429,15 @@ int wmain(int argc, wchar_t** argv) {
                     if (op == "ping" && args.size() == 2) { lastPing = Clock::now(); Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}"); continue; }
                     if (op == "quit" && args.size() == 2) { recording.Finish("interrupted", "controller_shutdown");stopBuffer("worker_shutdown");exporter.Cancel(); quitting = true; }
                     else if (op == "stop" && args.size() == 2) recording.Finish("stopped", "requested");
-                    else if(op=="buffer_start"&&args.size()==5){
+                    else if(op=="buffer_start"&&(args.size()==5||args.size()==6)){
                         if(!MediaLimitsActive())throw std::runtime_error("media_resource_limits_required");
                         MediaBudget::Admit();
                         if(recording.active()||exporter.Busy())throw std::runtime_error("media_busy");
                         if(recent&&recent->Active())throw std::runtime_error("buffer_already_active");
                         Identifier(args[2]);const auto profile=RecentProfile(args[4]);if(args[3]!="audio"&&args[3]!="video"&&args[3]!="combined")throw std::runtime_error("invalid_buffer_mode");
                         if(RequireConsole()!=L"Default")throw std::runtime_error("default_desktop_required");
-                        Frame first,source;if(args[3]!="audio"){source=capture.Grab(true);first=BufferFrame(capture,source,profile);}
-                        recent=std::make_unique<RecentMedia>();recent->sourceWidth=source.width;recent->sourceHeight=source.height;
+                        Frame first,source;std::string sourceInfo="\"source\":null";if(args[3]!="audio"){capture.Configure(args.size()==6?args[5]:"fullscreen",false);source=capture.Grab(true);sourceInfo=capture.Metadata(source);first=BufferFrame(capture,source,profile);}else if(args.size()==6&&args[5]!="none")throw std::runtime_error("audio_has_no_visual_source");
+                        recent=std::make_unique<RecentMedia>();recent->sourceWidth=source.width;recent->sourceHeight=source.height;recent->sourceInfo=sourceInfo;
                         budget=MediaBudget();recent->Begin(args[2],args[3],args[4],first);bufferEvent("buffer_state");
                         Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,"+recent->Status()+","+budget.Status()+"}");continue;
                     }else if(op=="buffer_status"&&args.size()==2){
@@ -543,20 +451,20 @@ int wmain(int argc, wchar_t** argv) {
                         if(!recent||!recent->history)throw std::runtime_error("buffer_not_ready");
                         const int seconds=Number(args[3],1,30);Identifier(args[2]);exporter.Start(recent->history->Snapshot(seconds),root,args[2],recent->id,request);continue;
                     }
-                    else if (op == "record" && (args.size() == 7 || args.size() == 8)) {
+                    else if (op == "record" && (args.size() == 7 || args.size() == 8||args.size()==9)) {
                         Identifier(args[2]);const int duration=Number(args[3],1,MaximumSeconds),fps=Number(args[4],1,30),width=Number(args[5],0,3840),bits=Number(args[6],1000000,20000000);const bool audio=args.size()==7||Number(args[7],0,1)!=0;
                         RequireConsole();if(recording.active()||exporter.Busy())throw std::runtime_error("media_busy");stopBuffer("recording_started");budget=MediaBudget();
-                        recording.Begin(capture, root, args[2],duration,fps,width,bits,audio);
+                        capture.Configure(args.size()==9?args[8]:"fullscreen",false);recording.Begin(capture, root, args[2],duration,fps,width,bits,audio);
                         Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true," + recording.Status("recording") + "}"); continue;
-                    } else if (op == "snapshot" && args.size() == 6) {
+                    } else if (op == "snapshot" && (args.size() == 6||args.size()==8)) {
                         Identifier(args[2]); const bool jpeg = args[3] == "jpeg"; if (!jpeg && args[3] != "png") throw std::runtime_error("invalid_image_format");
-                        Frame source = capture.Grab(Number(args[5], 0, 1) != 0); const std::string capturedUtc = Utc(); Frame frame = capture.Scale(source, Number(args[4], 0, 3840), false);
-                        const fs::path output = root / L"captures" / fs::u8path(args[2] + (jpeg ? ".jpg" : ".png")); fs::create_directories(output.parent_path()); capture.Save(frame, output, jpeg); if(Utf8(RequireConsole())!=source.desktop)throw std::runtime_error("desktop_changed_during_snapshot");
+                        capture.Configure(args.size()==8?args[6]:"fullscreen",recording.active()||(recent&&recent->Active()&&recent->hasVideo));Frame source = capture.Grab(Number(args[5], 0, 1) != 0,args.size()==8?Number(args[7],0,200):0);const std::string metadata=capture.Metadata(source);const auto desktop=source.desktop;Frame frame = capture.Scale(std::move(source), Number(args[4], 0, 3840), false);
+                        const fs::path output = root / L"captures" / fs::u8path(args[2] + (jpeg ? ".jpg" : ".png")); fs::create_directories(output.parent_path()); capture.Save(frame, output, jpeg); if(Utf8(RequireConsole())!=desktop)throw std::runtime_error("desktop_changed_during_snapshot");
                         DWORD session = 0; ProcessIdToSessionId(GetCurrentProcessId(), &session);
-                        std::ostringstream out; out << "{\"id\":" << request << ",\"ok\":true,\"frameId\":" << Json(args[2]) << ",\"path\":" << Json(Utf8(output.wstring())) << ",\"capturedUtc\":" << Json(capturedUtc) << ",\"currentSession\":" << session << ",\"consoleSession\":" << WTSGetActiveConsoleSessionId() << ",\"display\":\"primary\",\"desktop\":" << Json(source.desktop) << ",\"uacPromptId\":" << Json(source.uacPromptId) << ",\"left\":0,\"top\":0,\"width\":" << frame.width << ",\"height\":" << frame.height << ",\"sourceWidth\":" << source.width << ",\"sourceHeight\":" << source.height << ",\"cursor\":{\"x\":" << source.cursor.x << ",\"y\":" << source.cursor.y << "},\"cursorIncludedInImage\":" << (frame.cursorIncluded ? "true" : "false") << ",\"mimeType\":" << Json(jpeg ? "image/jpeg" : "image/png") << ",\"inputSent\":false}"; Emit(out.str()); continue;
+                        std::ostringstream out;out<<"{\"id\":"<<request<<",\"ok\":true,\"frameId\":"<<Json(args[2])<<",\"path\":"<<Json(Utf8(output.wstring()))<<","<<metadata<<","<<capture.ImageMetadata(frame)<<",\"currentSession\":"<<session<<",\"consoleSession\":"<<WTSGetActiveConsoleSessionId()<<",\"display\":"<<Json(capture.WindowSource()?"window":"primary")<<",\"desktop\":"<<Json(frame.desktop)<<",\"uacPromptId\":"<<Json(frame.uacPromptId)<<",\"width\":"<<frame.width<<",\"height\":"<<frame.height<<",\"cursor\":{\"x\":"<<frame.cursor.x<<",\"y\":"<<frame.cursor.y<<"},\"cursorIncludedInImage\":"<<(frame.cursorIncluded?"true":"false")<<",\"mimeType\":"<<Json(jpeg?"image/jpeg":"image/png")<<",\"inputSent\":false}";Emit(out.str());continue;
                     } else throw std::runtime_error("invalid_command");
                     Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}");
-                } catch (const std::exception& error) { Emit("{\"id\":" + std::to_string(request) + ",\"ok\":false,\"error\":" + Json(error.what()) + "}"); }
+                } catch (const std::exception& error) { if(!recording.active()&&!(recent&&recent->Active()&&recent->hasVideo))capture.Reset();Emit("{\"id\":" + std::to_string(request) + ",\"ok\":false,\"error\":" + Json(error.what()) + "}"); }
             }
             if (recording.active()) {
                 try {
@@ -571,7 +479,7 @@ int wmain(int argc, wchar_t** argv) {
                     const auto now=Clock::now();if(now-lastPing>std::chrono::seconds(5))throw std::runtime_error("controller_heartbeat_lost");
                     if(RequireConsole()!=L"Default")throw std::runtime_error("desktop_changed");budget.CheckUsage();recent->PumpAudio();
                     if(recent->hasVideo&&now>=recent->next){
-                        Frame source=capture.Grab(true);if(source.desktop!="Default"||source.width!=recent->sourceWidth||source.height!=recent->sourceHeight)throw std::runtime_error("display_changed");
+                        Frame source=capture.Grab(true);if(source.desktop!="Default"||source.width!=recent->sourceWidth||source.height!=recent->sourceHeight)throw std::runtime_error("display_changed");recent->sourceInfo=capture.Metadata(source);
                         const auto interval=std::chrono::microseconds(1000000/recent->profile.fps);
                         if(now-recent->next>std::chrono::seconds(2))throw std::runtime_error("capture_backlog");
                         if(now-recent->next>interval*2)recent->droppedFrames++;

@@ -15,9 +15,9 @@ call "%KVM_CAPTURE_SETUP%" amd64
 @echo off
 if errorlevel 1 exit /b %errorlevel%
 cd /d "%KVM_CAPTURE_OUTPUT%"
-set "INCLUDE=%INCLUDE%;%WindowsSdkDir%Include\%Version_Number%\ucrt;%WindowsSdkDir%Include\%Version_Number%\shared;%WindowsSdkDir%Include\%Version_Number%\um;%WindowsSdkDir%Include\%Version_Number%\winrt"
+set "INCLUDE=%INCLUDE%;%WindowsSdkDir%Include\%Version_Number%\ucrt;%WindowsSdkDir%Include\%Version_Number%\shared;%WindowsSdkDir%Include\%Version_Number%\um;%WindowsSdkDir%Include\%Version_Number%\winrt;%WindowsSdkDir%Include\%Version_Number%\cppwinrt"
 set "LIB=%LIB%;%WindowsSdkDir%Lib\%Version_Number%\ucrt\x64;%WindowsSdkDir%Lib\%Version_Number%\um\x64"
-cl.exe /nologo /std:c++17 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE "%KVM_CAPTURE_SOURCE%" /Fo"ScreenCapture.obj" /Fe"ScreenCapture.exe" /link d3d11.lib dxgi.lib windowscodecs.lib mfplat.lib mfreadwrite.lib mfuuid.lib ole32.lib oleaut32.lib user32.lib gdi32.lib wtsapi32.lib winmm.lib advapi32.lib psapi.lib
+cl.exe /nologo /std:c++17 /EHsc /W4 /WX /O2 /MT /DUNICODE /D_UNICODE "%KVM_CAPTURE_SOURCE%" /Fo"ScreenCapture.obj" /Fe"ScreenCapture.exe" /link d3d11.lib dxgi.lib windowscodecs.lib mfplat.lib mfreadwrite.lib mfuuid.lib ole32.lib oleaut32.lib user32.lib gdi32.lib wtsapi32.lib winmm.lib advapi32.lib psapi.lib windowsapp.lib dwmapi.lib
 exit /b %errorlevel%
 '@ | Set-Content -LiteralPath $taskBatch -Encoding ascii
 $taskVariables = @{ KVM_CAPTURE_SETUP=$taskSetup; KVM_CAPTURE_OUTPUT=$taskOutput; KVM_CAPTURE_SOURCE=(Join-Path $taskSource 'native\ScreenCapture.cpp') }

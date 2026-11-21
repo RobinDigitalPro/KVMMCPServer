@@ -1,6 +1,6 @@
 {
   "name": "open-desktop-hid",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "description": "Small, independently testable Windows HID controls for local agents",
   "type": "module",

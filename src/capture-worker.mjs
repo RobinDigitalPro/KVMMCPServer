@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { atomicJson, externalRoot } from './state.mjs';
+import {sourceWire} from './capture-source.mjs';
 
 // One private pipe to a persistent user-mode worker. No HTTP/video endpoint.
 export class CaptureWorker extends EventEmitter {
@@ -79,9 +80,12 @@ export class CaptureWorker extends EventEmitter {
     const { id, ok, type, ...metadata } = value;
     this.#buffer = metadata; this.emit('buffer', { ...metadata });
   }
-  async startBuffer({ bufferId = randomUUID(), mode, profile = 'standard' }) {
+  async startBuffer({ bufferId = randomUUID(), mode, profile = 'standard', source }) {
     if (!/^[a-f0-9-]{36}$/.test(bufferId) || !['audio','video','combined'].includes(mode) || !['light','standard','high'].includes(profile)) throw new Error('Invalid buffer options');
-    const value = await this.#request('buffer_start', [bufferId, mode, profile]);this.#updateBuffer(value);return this.buffer;
+    if(mode==='audio'&&source!==undefined)throw new Error('Audio-only buffers cannot select a visual source');
+    const key=sourceWire(source),ready=await this.#ready,modern=ready.protocolVersion>=4;
+    if(!modern&&source!==undefined)throw new Error('Capture source selection requires the current ScreenCapture.exe');
+    const value = await this.#request('buffer_start', [bufferId, mode, profile,...(modern?[mode==='audio'?'none':key]:[])]);this.#updateBuffer(value);return this.buffer;
   }
   async bufferStatus() { const value = await this.#request('buffer_status');this.#updateBuffer(value);return this.buffer; }
   async stopBuffer(reason = 'requested') {
@@ -101,27 +105,32 @@ export class CaptureWorker extends EventEmitter {
       const expected = path.join(this.#root, 'media', `${exportId}.${metadata.mimeType === 'audio/mp4' ? 'm4a' : 'mp4'}`);
       if (path.resolve(metadata.path) !== expected) throw new Error('Unexpected media export path');
       const stat = await fs.stat(expected);if (stat.size > 40 * 1024 * 1024) throw new Error('Media export exceeds byte limit');
-      const receipt = { ...metadata, bytes: stat.size, requestedSeconds: seconds, exportedUtc: new Date().toISOString() };
+      const receipt = { ...metadata, source:this.#buffer?.source??null,bytes: stat.size, requestedSeconds: seconds, exportedUtc: new Date().toISOString() };
       await atomicJson(path.join(this.#root, 'media', `${exportId}.json`), receipt);return receipt;
     } finally { this.#exporting = false;signal?.removeEventListener('abort', cancel); }
   }
-  async snapshot({ format = 'png', maxWidth = 0, includeCursor = true, signal } = {}) {
+  async snapshot({ format = 'png', maxWidth = 0, includeCursor = true, source, maxWaitMs=0, signal } = {}) {
     signal?.throwIfAborted();
     if (!['png', 'jpeg'].includes(format) || !Number.isInteger(maxWidth) || maxWidth < 0 || maxWidth > 3840) throw new Error('Invalid snapshot options');
     const frameId = randomUUID();
-    const { id, ok, ...metadata } = await this.#request('snapshot', [frameId, format, maxWidth, includeCursor ? 1 : 0]);
+    if(!Number.isInteger(maxWaitMs)||maxWaitMs<0||maxWaitMs>200)throw new Error('maxWaitMs must be 0..200');
+    const key=sourceWire(source),ready=await this.#ready,modern=ready.protocolVersion>=4;
+    if(!modern&&(source!==undefined||maxWaitMs))throw new Error('Capture source selection requires the current ScreenCapture.exe');
+    const { id, ok, ...metadata } = await this.#request('snapshot', [frameId, format, maxWidth, includeCursor ? 1 : 0,...(modern?[key,maxWaitMs]:[])]);
     signal?.throwIfAborted();
     const expected = path.join(this.#root, 'captures', `${frameId}.${format === 'jpeg' ? 'jpg' : 'png'}`);
     if (path.resolve(metadata.path) !== expected) throw new Error('Unexpected capture output path');
     if ((await fs.stat(expected)).size > 16 * 1024 * 1024) throw new Error('Capture exceeds 16 MiB image limit');
     return { ...metadata, data: (await fs.readFile(expected, { signal })).toString('base64') };
   }
-  async startRecording({ recordingId = randomUUID(), maxSeconds = 600, fps = 15, maxWidth = 1920, bitrate = 6000000, systemAudio = true } = {}) {
+  async startRecording({ recordingId = randomUUID(), maxSeconds = 600, fps = 15, maxWidth = 1920, bitrate = 6000000, systemAudio = true,source } = {}) {
     if (!/^[a-f0-9-]{36}$/.test(recordingId) || !Number.isInteger(maxSeconds) || maxSeconds < 1 || maxSeconds > 600 || !Number.isInteger(fps) || fps < 1 || fps > 30 || !Number.isInteger(maxWidth) || maxWidth < 0 || maxWidth > 3840 || !Number.isInteger(bitrate) || bitrate < 1000000 || bitrate > 20000000) throw new Error('Invalid recording options; maximum duration is 600 seconds');
     if (this.#starting || this.#recording?.state === 'recording') throw new Error('A recording is already active');
     if (typeof systemAudio !== 'boolean') throw new Error('systemAudio must be boolean');
     this.#starting = (async () => {
-      const value = await this.#request('record', [recordingId, maxSeconds, fps, maxWidth, bitrate, systemAudio ? 1 : 0]);
+      const key=sourceWire(source),ready=await this.#ready,modern=ready.protocolVersion>=4;
+      if(!modern&&source!==undefined)throw new Error('Capture source selection requires the current ScreenCapture.exe');
+      const value = await this.#request('record', [recordingId, maxSeconds, fps, maxWidth, bitrate, systemAudio ? 1 : 0,...(modern?[key]:[])]);
       // A very short recording can finish before its start acknowledgement is read.
       if (this.#recording?.recordingId !== recordingId || this.#recording.state === 'recording') this.#update(value);
       return this.#recording;

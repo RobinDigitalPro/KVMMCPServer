@@ -96,7 +96,7 @@ export class NativeTransport {
     if (!this.#dataRoot) throw new Error('Capture requires an external --data-root configuration');
     if (this.#fatal) throw this.#fatal;
     if (this.recordingAvailable) { const frame = await this.#screen().snapshot({ ...options, signal }); this.#securePrompt = frame.desktop === 'Winlogon' ? frame.uacPromptId : undefined; this.#secureCapturedAt = Date.parse(frame.capturedUtc); return frame; }
-    if (options.format === 'jpeg' || options.maxWidth || options.includeCursor === true) throw new Error('Extended snapshots require ScreenCapture.exe');
+    if (options.format === 'jpeg' || options.maxWidth || options.includeCursor === true || options.source || options.maxWaitMs) throw new Error('Extended snapshots require ScreenCapture.exe');
     signal?.throwIfAborted();
     const frameId = randomUUID();
     const folder = path.join(this.#dataRoot, 'captures'); await fs.mkdir(folder, { recursive: true });

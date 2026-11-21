@@ -1,5 +1,29 @@
 # Desktop acceptance
 
+## Capture sources, 0.9.0
+
+The JavaScript/MCP suite passes 94 tests. Native source-contract self-tests pass
+11 checks and encoded-history checks pass seven, without opening HID/capture.
+The new combined-history checks prevent a clip boundary from excluding its
+first complete video keyframe while retaining only audio packets.
+
+All nine native source/media combinations passed with a dedicated non-activating
+fixture: fullscreen/window/region snapshots, finalized decoded MP4 recordings,
+and decoded recent-buffer exports. The tests also verify same-source sharing,
+different-source refusal during capture, invalid bounds, minimized windows,
+recovery and a finalized recording stopped on resize. The window PNG contains
+the fixture's exact expected RGB patch/background values, including client cropping.
+
+The actual official SDK/stdio/broker/native route captured all three snapshot
+sources, finalized and decoded a 60-second window recording with 300 video frames
+and real system-loopback audio, and decoded both tracks of a combined window
+buffer export. Tests suppress HID writes; no user application input is injected.
+Host receipts and timings are external under `tests/capture-sources-0.9.0`.
+
+The worker still enforces its CPU/private-memory limits. The kernel and UAC
+service were not changed. [Capture source usage](CAPTURE_SOURCES.md) describes
+supported formats, source lifetimes, geometry, audio scope and frame freshness.
+
 ## Relative mouse release, 0.8.1
 
 The isolated suite passes 91 JavaScript/MCP tests. The native helper passes 35
@@ -13,8 +37,8 @@ longer cause an absolute report during release.
 
 The kernel watchdog and UAC-service installation are unchanged. On-host
 acceptance uses a dedicated observed receiver and stores receipts outside the
-repository. A packet-level proof does not by itself prove VMware game-cursor
-behavior; any VMware-specific observation must be reported separately.
+repository. A packet-level proof does not by itself prove guest game-cursor
+behavior; any guest-specific observation must be reported separately.
 
 Seven on-host acceptance cases passed through two real official SDK/MCP clients:
 five alternating-owner relative clicks each incremented the receiver's click
@@ -22,10 +46,9 @@ counter, moved the physical cursor, emitted no absolute Raw Input, and preserved
 the exact cursor position across release. An actually held absolute button still
 produced its required absolute button-up. Cancelling during the local pause
 released the lease without a click or absolute replay. These checks use the
-physical console and our own receiver, not the VMware guest/game cursor.
+physical console and our own receiver, not the virtual-machine guest/game cursor.
 
-The [capture-source proposal](CAPTURE_SOURCE_PROPOSAL.md) is not implemented in
-this patch release.
+The capture-source proposal was implemented subsequently in 0.9.0.
 
 ## Relative gestures and recent-media buffer, 0.8.0
 

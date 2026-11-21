@@ -61,16 +61,22 @@ public:
     RecentSnapshot Snapshot(double seconds,bool copy=true)const {
         std::lock_guard<std::mutex> lock(gate);RecentSnapshot result;result.video=video;result.audio=audio;result.types=types;
         result.end=video&&audio?std::min(lastVideo,lastAudio):std::max(lastVideo,lastAudio);
+        // AAC and video sample boundaries rarely coincide. A common end just
+        // before a keyframe's end must not produce an "MP4" with audio only.
+        if(video){LONGLONG completeEnd=0;for(const auto& p:packets)if(p.video&&p.time+p.duration<=result.end)completeEnd=std::max(completeEnd,p.time+p.duration);result.end=completeEnd;}
         const LONGLONG wanted=std::max<LONGLONG>(0,result.end-static_cast<LONGLONG>(seconds*10000000));
         bool found=false;
-        for(const auto& packet:packets)if(packet.time>=wanted&&packet.time<result.end&&(!video||packet.video&&packet.clean)){
+        for(const auto& packet:packets)if(packet.time>=wanted&&packet.time+packet.duration<=result.end&&(!video||packet.video&&packet.clean)){
             result.begin=packet.time;found=true;break;
         }
         if(!found){result.begin=result.end;return result;}
         for(const auto& packet:packets)if(packet.time>=result.begin&&packet.time+packet.duration<=result.end){
             result.bytes+=packet.bytes.size();if(copy)result.packets.push_back(packet);
         }
-        if(copy)std::stable_sort(result.packets.begin(),result.packets.end(),[](const EncodedPacket& a,const EncodedPacket& b){return a.time<b.time;});
+        if(copy){
+            if((video&&!std::any_of(result.packets.begin(),result.packets.end(),[](const EncodedPacket& p){return p.video;}))||(audio&&!std::any_of(result.packets.begin(),result.packets.end(),[](const EncodedPacket& p){return !p.video;}))){result.packets.clear();result.begin=result.end;result.bytes=0;return result;}
+            std::stable_sort(result.packets.begin(),result.packets.end(),[](const EncodedPacket& a,const EncodedPacket& b){return a.time<b.time;});
+        }
         return result;
     }
     size_t Bytes()const{std::lock_guard<std::mutex> lock(gate);return bytes;}
@@ -200,7 +206,7 @@ public:
     std::string id,mode,state="idle",reason,startedUtc,stoppedUtc;
     BufferProfile profile={"standard",1280,10,2000000};
     bool hasVideo=false,hasAudio=false;
-    UINT width=0,height=0,sourceWidth=0,sourceHeight=0;
+    UINT width=0,height=0,sourceWidth=0,sourceHeight=0;std::string sourceInfo="\"source\":null";
     UINT64 frames=0,droppedFrames=0;
     Clock::time_point began,next;
     explicit RecentMedia(std::unique_ptr<SystemAudio> audio=std::make_unique<SystemAudio>()):source(std::move(audio)){}
@@ -261,7 +267,7 @@ public:
     }
     std::string Status()const{
         RecentSnapshot snapshot;if(history)snapshot=history->Snapshot(30,false);
-        std::ostringstream out;out<<"\"bufferId\":"<<Json(id)<<",\"mode\":"<<Json(mode)<<",\"profile\":"<<Json(profile.name)<<",\"state\":"<<Json(state)<<",\"reason\":"<<Json(reason)<<",\"startedUtc\":"<<Json(startedUtc)<<",\"stoppedUtc\":"<<Json(stoppedUtc)<<",\"availableSeconds\":"<<static_cast<double>(snapshot.end-snapshot.begin)/10000000<<",\"bufferedBytes\":"<<(history?history->Bytes():0)<<",\"maxBytes\":"<<EncodedHistory::MaximumBytes<<",\"maxSeconds\":30,\"width\":"<<width<<",\"height\":"<<height<<",\"fps\":"<<(hasVideo?profile.fps:0)<<",\"videoBitrate\":"<<(hasVideo?profile.bitrate:0)<<",\"audioBitrate\":"<<(hasAudio?160000:0)<<",\"sampleRate\":"<<(hasAudio?SystemAudio::Rate:0)<<",\"channels\":"<<(hasAudio?SystemAudio::Channels:0)<<",\"microphone\":false,\"frames\":"<<frames<<",\"droppedFrames\":"<<droppedFrames;return out.str();
+        std::ostringstream out;out<<"\"bufferId\":"<<Json(id)<<",\"mode\":"<<Json(mode)<<",\"profile\":"<<Json(profile.name)<<",\"state\":"<<Json(state)<<",\"reason\":"<<Json(reason)<<",\"startedUtc\":"<<Json(startedUtc)<<",\"stoppedUtc\":"<<Json(stoppedUtc)<<",\"availableSeconds\":"<<static_cast<double>(snapshot.end-snapshot.begin)/10000000<<",\"bufferedBytes\":"<<(history?history->Bytes():0)<<",\"maxBytes\":"<<EncodedHistory::MaximumBytes<<",\"maxSeconds\":30,\"width\":"<<width<<",\"height\":"<<height<<",\"fps\":"<<(hasVideo?profile.fps:0)<<",\"videoBitrate\":"<<(hasVideo?profile.bitrate:0)<<",\"audioBitrate\":"<<(hasAudio?160000:0)<<",\"sampleRate\":"<<(hasAudio?SystemAudio::Rate:0)<<",\"channels\":"<<(hasAudio?SystemAudio::Channels:0)<<",\"microphone\":false,\"frames\":"<<frames<<",\"droppedFrames\":"<<droppedFrames<<","<<sourceInfo;return out.str();
     }
     static void Export(const RecentSnapshot& snapshot,const fs::path& output,const std::atomic<bool>* cancelled=nullptr){
         if(snapshot.packets.empty()||snapshot.end<=snapshot.begin)throw std::runtime_error("buffer_not_ready");

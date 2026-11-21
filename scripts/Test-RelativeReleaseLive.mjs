@@ -15,7 +15,7 @@ if(mode!=='--live'||![observer,dataRoot,output].every(x=>x&&path.isAbsolute(x)))
 await fs.mkdir(output,{recursive:false});const log=path.join(output,'receiver.jsonl');
 const receiver=spawn(observer,[log],{windowsHide:false,stdio:['ignore','ignore','pipe']});receiver.stderr.on('data',()=>{});
 const input=createInterface({input:process.stdin});const command=new Promise((resolve,reject)=>{input.once('line',resolve);input.once('close',()=>reject(Error('Keep stdin open (use a TTY) until receiver inspection is confirmed')));});command.catch(()=>{});
-const connections=[],receipt={version:'0.8.1',startedUtc:new Date().toISOString(),verified:false,scope:'dedicated physical-host receiver; no VMware/game test',cases:[]};
+const connections=[],receipt={version:'0.8.1',startedUtc:new Date().toISOString(),verified:false,scope:'dedicated physical-host receiver; no guest/game test',cases:[]};
 let lease,owner;
 const call=async(client,name,args={},options)=>{const r=await client.callTool({name,arguments:args},options);if(r.isError)throw Error(r.content[0].text);return JSON.parse(r.content[0].text);};
 const state=async()=>{for(let n=0;n<30;n++)try{return JSON.parse((await fs.readFile(log+'.state.json','utf8')).replace(/^\uFEFF/,''));}catch(e){if(n===29)throw e;await delay(50);}};

@@ -1,3 +1,13 @@
+# C++/WinRT
+
+The native window-capture backend uses C++/WinRT headers from the Windows SDK.
+The SDK headers used for the host build identify C++/WinRT v2.0.250303.1,
+Copyright (c) Microsoft Corporation, licensed under MIT. SDK headers are not
+vendored in this repository. Upstream: https://github.com/microsoft/cppwinrt
+
+The MIT permission and disclaimer reproduced below also apply to C++/WinRT,
+with the Microsoft Corporation copyright notice above.
+
 # vmulti protocol
 
 The vmulti backend uses the report layouts and identifiers defined by

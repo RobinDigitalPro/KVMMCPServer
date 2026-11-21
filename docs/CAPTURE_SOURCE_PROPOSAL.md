@@ -1,7 +1,8 @@
 # Proposal: one capture source for screenshots, recordings and recent media
 
-Status: design only. The 0.8.1 release fixes mouse release; it does not implement
-these new capture modes. The goal is lower action-to-observation latency and
+Status: core source modes implemented in 0.9.0. See [the current API](CAPTURE_SOURCES.md)
+for the shipped contract; optional afterActionId remains a future extension.
+This document retains the original design rationale. The goal is lower action-to-observation latency and
 bounded resource use. Crop at the capture/GPU boundary, before CPU readback,
 scaling, PNG/JPEG encoding, H.264 encoding or the encoded ring buffer.
 
@@ -36,8 +37,8 @@ process-ID filter. Zero matches gives `window_not_found`; multiple matches give
 window. Bind a continuous session to HWND + PID + process creation identity;
 subsequent title changes do not retarget it, and a reused HWND is not trusted.
 
-For a host-side KVM, a VMware window is a selectable host window. A game window
-inside the guest is not a host HWND. Capture the VMware window or an explicit
+For a host-side KVM, a virtual-machine viewer is a selectable host window. A window
+inside the guest is not a host HWND. Capture the viewer window or an explicit
 host rectangle around the visible guest game; this design adds no guest agent.
 
 ## Acquire only the selected pixels
