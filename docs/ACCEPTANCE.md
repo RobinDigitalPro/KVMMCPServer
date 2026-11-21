@@ -16,6 +16,14 @@ acceptance uses a dedicated observed receiver and stores receipts outside the
 repository. A packet-level proof does not by itself prove VMware game-cursor
 behavior; any VMware-specific observation must be reported separately.
 
+Seven on-host acceptance cases passed through two real official SDK/MCP clients:
+five alternating-owner relative clicks each incremented the receiver's click
+counter, moved the physical cursor, emitted no absolute Raw Input, and preserved
+the exact cursor position across release. An actually held absolute button still
+produced its required absolute button-up. Cancelling during the local pause
+released the lease without a click or absolute replay. These checks use the
+physical console and our own receiver, not the VMware guest/game cursor.
+
 The [capture-source proposal](CAPTURE_SOURCE_PROPOSAL.md) is not implemented in
 this patch release.
 

@@ -14,7 +14,7 @@ const [mode,observer,dataRoot,output]=process.argv.slice(2);
 if(mode!=='--live'||![observer,dataRoot,output].every(x=>x&&path.isAbsolute(x)))throw Error('Explicit --live and absolute paths required');
 await fs.mkdir(output,{recursive:false});const log=path.join(output,'receiver.jsonl');
 const receiver=spawn(observer,[log],{windowsHide:false,stdio:['ignore','ignore','pipe']});receiver.stderr.on('data',()=>{});
-const input=createInterface({input:process.stdin});const command=new Promise(resolve=>input.once('line',resolve));
+const input=createInterface({input:process.stdin});const command=new Promise((resolve,reject)=>{input.once('line',resolve);input.once('close',()=>reject(Error('Keep stdin open (use a TTY) until receiver inspection is confirmed')));});command.catch(()=>{});
 const connections=[],receipt={version:'0.8.1',startedUtc:new Date().toISOString(),verified:false,scope:'dedicated physical-host receiver; no VMware/game test',cases:[]};
 let lease,owner;
 const call=async(client,name,args={},options)=>{const r=await client.callTool({name,arguments:args},options);if(r.isError)throw Error(r.content[0].text);return JSON.parse(r.content[0].text);};
