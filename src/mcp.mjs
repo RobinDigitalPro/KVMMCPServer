@@ -8,7 +8,7 @@ import { parseOptions } from './broker.mjs';
 export { tools } from './tools.mjs';
 
 export function createMcpServer(endpoint) {
-  const server = new McpServer({ name: 'open-desktop-hid', version: '0.9.0' }, {
+  const server = new McpServer({ name: 'open-desktop-hid', version: '0.9.1' }, {
     instructions: 'Local physical-console desktop control. Acquire a short lease, capture and inspect, perform one small action, verify, and release. Relative move-click and drag execute locally with bounded timing and release on interruption. Recordings are MP4 with system playback audio by default when available, never microphone; max 600 seconds. One optional 30-second recent-media buffer supports audio/video/combined and fixed light/standard/high profiles. Recording stops buffering first; no simultaneous buffer/recording or automatic restart. Media is connection-bound and independent of input lease release. Inspect media_buffer_status for state/reason/resources; unseen owner events appear on subsequent results, without waking the model. Respect operator stop. Owner/job labels are descriptive; do not expose tokens. No RDP backend, microphone, livestream or transcription.',
   });
   for (const { name, description, schema, annotations } of definitions) {

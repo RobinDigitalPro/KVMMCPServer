@@ -65,6 +65,13 @@ public:
         }throw std::runtime_error("primary_display_unavailable");
     }
     Frame Grab(bool cursor,int waitMs=0){
+        // CopySubresourceRegion is asynchronous. Keep the duplication surface
+        // owned until Map has completed the GPU readback, including on errors.
+        struct DesktopFrame {
+            ComPtr<IDXGIOutputDuplication> owner;
+            HRESULT Finish(){auto current=std::move(owner);return current?current->ReleaseFrame():S_OK;}
+            ~DesktopFrame(){Finish();}
+        } desktopFrame;
         const auto desktop=RequireConsole();if(desktop!=lastDesktop){Reset();lastDesktop=desktop;}
         if(desktop==L"Winlogon"){
             if(!Fullscreen())throw std::runtime_error("source_desktop_changed");
@@ -87,13 +94,20 @@ public:
                 const HRESULT hr=duplication->AcquireNextFrame(0,&info,&resource);
                 if(hr==DXGI_ERROR_ACCESS_LOST){Reset();throw std::runtime_error("display_configuration_changed");}
                 if(hr!=DXGI_ERROR_WAIT_TIMEOUT){Check(hr,"acquire desktop frame");
+                    desktopFrame.owner=duplication;
                     try{
                         if(info.LastMouseUpdateTime.QuadPart)separatePointer=info.PointerPosition.Visible!=FALSE;
+                        // A first pointer-only update has no desktop pixels.
+                        // Never initialize staging (or its timestamp) from it.
+                        if(!info.LastPresentTime.QuadPart){
+                            Check(desktopFrame.Finish(),"release pointer-only frame");
+                            if(Clock::now()>=deadline)break;Sleep(2);continue;
+                        }
                         DXGI_OUTDUPL_DESC output;duplication->GetDesc(&output);if(output.Rotation!=DXGI_MODE_ROTATION_IDENTITY&&output.Rotation!=DXGI_MODE_ROTATION_UNSPECIFIED)throw std::runtime_error("rotated_display_not_supported");
                         ComPtr<ID3D11Texture2D> texture;Check(resource.As(&texture),"desktop texture");D3D11_TEXTURE2D_DESC desc;texture->GetDesc(&desc);
                         // Pointer-only updates do not claim a new content frame.
-                        if(info.LastPresentTime.QuadPart||!staging){Copy(texture.Get(),selection.Box(desc.Width,desc.Height));stamp=info.LastPresentTime.QuadPart?QpcTicksToTime(info.LastPresentTime.QuadPart):FrameQpc();sequence++;reused=false;}
-                    }catch(...){duplication->ReleaseFrame();throw;}Check(duplication->ReleaseFrame(),"release desktop frame");break;
+                        Copy(texture.Get(),selection.Box(desc.Width,desc.Height));stamp=QpcTicksToTime(info.LastPresentTime.QuadPart);sequence++;reused=false;
+                    }catch(...){throw;}break;
                 }
             }
             if(Clock::now()>=deadline)break;Sleep(2);
@@ -104,6 +118,7 @@ public:
         try{Check(context->Map(staging.Get(),0,D3D11_MAP_READ,0,&mapped),"map selected source");
             for(UINT row=0;row<frame.height;row++)memcpy(frame.pixels.data()+static_cast<size_t>(row)*frame.width*4,static_cast<BYTE*>(mapped.pData)+static_cast<size_t>(row)*mapped.RowPitch,frame.width*4);
             context->Unmap(staging.Get(),0);if(window)window->Done();
+            Check(desktopFrame.Finish(),"release desktop frame");
         }catch(...){if(window)window->Done();throw;}
         if(RequireConsole()!=desktop){Reset();throw std::runtime_error("desktop_changed_during_capture");}
         GetCursorPos(&frame.cursor);

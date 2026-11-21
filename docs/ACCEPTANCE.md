@@ -1,6 +1,6 @@
 # Desktop acceptance
 
-## Capture sources, 0.9.0
+## Capture sources, 0.9.1
 
 The JavaScript/MCP suite passes 94 tests. Native source-contract self-tests pass
 11 checks and encoded-history checks pass seven, without opening HID/capture.
@@ -11,8 +11,9 @@ All nine native source/media combinations passed with a dedicated non-activating
 fixture: fullscreen/window/region snapshots, finalized decoded MP4 recordings,
 and decoded recent-buffer exports. The tests also verify same-source sharing,
 different-source refusal during capture, invalid bounds, minimized windows,
-recovery and a finalized recording stopped on resize. The window PNG contains
-the fixture's exact expected RGB patch/background values, including client cropping.
+recovery and a finalized recording stopped on resize. All nine combinations now
+check the fixture's expected RGB patch/background values: exact PNG pixels and
+bounded codec tolerance for decoded video/buffer pixels, including client cropping.
 
 The actual official SDK/stdio/broker/native route captured all three snapshot
 sources, finalized and decoded a 60-second window recording with 300 video frames
@@ -23,6 +24,13 @@ Host receipts and timings are external under `tests/capture-sources-0.9.0`.
 The worker still enforces its CPU/private-memory limits. The kernel and UAC
 service were not changed. [Capture source usage](CAPTURE_SOURCES.md) describes
 supported formats, source lifetimes, geometry, audio scope and frame freshness.
+
+The initial 0.9.0 checks missed black first frames: decoding and dimensions alone
+do not prove picture content. A measured initial DXGI pointer-only update had no
+desktop presentation. 0.9.1 waits for a real first content frame, reuses only an
+existing content frame for pointer updates, and retains DXGI ownership through
+GPU readback. Failed receipts are retained; corrected pixel checks passed in
+`pixel-matrix-2` and a fresh minute MCP run in `mcp-pointer-fix`.
 
 ## Relative mouse release, 0.8.1
 

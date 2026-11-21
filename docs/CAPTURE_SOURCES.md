@@ -1,4 +1,4 @@
-# Capture sources, 0.9.0
+# Capture sources, 0.9.1
 
 Screenshots, recordings and video/combined recent buffers accept the same
 optional `source`. Exactly one mode is selected. Omission keeps fullscreen on
