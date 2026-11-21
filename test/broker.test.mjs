@@ -120,7 +120,7 @@ test('two official SDK stdio clients share one broker and preserve stop across M
       await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../src/mcp.mjs', import.meta.url)), '--connect', '--data-root', dataRoot, '--agent', agent], stderr: 'pipe' }));
     }
     const [a, b] = clients;
-    assert.equal((await a.listTools()).tools.length, 23);
+    assert.equal((await a.listTools()).tools.length, 27);
     const lease = text(await a.callTool({ name: 'hid_acquire', arguments: { owner: 'sdk-a' } }));
     assert.equal((await b.callTool({ name: 'hid_mouse_relative', arguments: { token: lease.token, dx: 1 } })).isError, true);
     await b.callTool({ name: 'hid_emergency_stop', arguments: {} });

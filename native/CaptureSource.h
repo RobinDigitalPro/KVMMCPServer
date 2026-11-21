@@ -49,6 +49,8 @@ class WindowCapture {
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem item{nullptr};
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool pool{nullptr};
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession session{nullptr};
+    struct ArrivalSignal {std::atomic<UINT64> count{0};HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);~ArrivalSignal(){if(event)CloseHandle(event);}};
+    std::shared_ptr<ArrivalSignal> arrivals=std::make_shared<ArrivalSignal>();UINT64 seen=0;winrt::event_token arrivalToken{};Clock::time_point lastValidation={};
     SIZE original={};
     static FILETIME Identity(DWORD pid){
         HANDLE p=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);if(!p)throw std::runtime_error("window_process_unavailable");
@@ -59,8 +61,11 @@ public:
     DWORD Pid()const{return processId;}
     std::string Id()const{std::ostringstream out;out<<"window:"<<processId<<":"<<reinterpret_cast<ULONG_PTR>(window)<<":"<<created.dwHighDateTime<<":"<<created.dwLowDateTime;return out.str();}
     bool OwnsPoint(POINT p)const{return GetAncestor(WindowFromPoint(p),GA_ROOT)==window;}
-    ~WindowCapture(){try{if(session)session.Close();if(pool)pool.Close();}catch(...){}}
+    ~WindowCapture(){try{if(pool&&arrivalToken.value)pool.FrameArrived(arrivalToken);if(session)session.Close();if(pool)pool.Close();}catch(...){}}
+    bool HasFrame()const{return arrivals->count.load()!=seen;}
+    HANDLE FrameEvent()const{return arrivals->event;}
     void Validate(){
+        lastValidation=Clock::now();
         DWORD pid=0;if(!IsWindow(window))throw std::runtime_error("window_closed");GetWindowThreadProcessId(window,&pid);
         if(pid!=processId||CompareFileTime(&created,&IdentityCopy(pid))!=0)throw std::runtime_error("window_identity_changed");
         if(IsIconic(window))throw std::runtime_error("window_minimized");if(!IsWindowVisible(window))throw std::runtime_error("window_hidden");
@@ -90,14 +95,19 @@ public:
             Check(CreateDirect3D11DeviceFromDXGIDevice(dxgi.Get(),wrapped.put()),"window Direct3D device");
             auto device=wrapped.as<winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice>();
             pool=Direct3D11CaptureFramePool::CreateFreeThreaded(device,winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,2,size);
+            arrivalToken=pool.FrameArrived([signal=arrivals](const auto&,const auto&){signal->count.fetch_add(1);if(signal->event)SetEvent(signal->event);});
             session=pool.CreateCaptureSession(item);session.IsCursorCaptureEnabled(false);session.StartCapture();
         }catch(const winrt::hresult_error& e){throw std::runtime_error("window_capture_failed: "+Utf8(std::wstring(e.message())));}
     }
-    bool Next(ComPtr<ID3D11Texture2D>& texture,LONGLONG& timestamp,D3D11_BOX& box,bool cursor,const CaptureSelection& source){
+    bool Next(ComPtr<ID3D11Texture2D>& texture,LONGLONG& timestamp,D3D11_BOX& box,bool cursor,const CaptureSelection& source,int freshWaitMs=0){
         UNREFERENCED_PARAMETER(cursor);
-        Validate();try{
-            auto frame=pool.TryGetNextFrame();if(!frame)return false;
+        try{
+            const auto noticed=arrivals->count.load();auto frame=pool.TryGetNextFrame();seen=noticed;if(!frame){if(Clock::now()-lastValidation>=std::chrono::milliseconds(250))Validate();return false;}Validate();
             for(int n=0;n<3;n++){auto latest=pool.TryGetNextFrame();if(!latest)break;frame.Close();frame=latest;}
+            // A paused consumer can leave two old frames in the pool. Bounded
+            // wait requests let the producer refill after those are drained.
+            const auto freshDeadline=Clock::now()+std::chrono::milliseconds(freshWaitMs);
+            while(freshWaitMs&&FrameQpc()-frame.SystemRelativeTime().count()>200000&&Clock::now()<freshDeadline){auto latest=pool.TryGetNextFrame();if(latest){frame.Close();frame=latest;}else Sleep(2);}
             auto size=frame.ContentSize();if(size.Width!=original.cx||size.Height!=original.cy){frame.Close();throw std::runtime_error("source_resized");}
             auto access=frame.Surface().as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();Check(access->GetInterface(IID_PPV_ARGS(&texture)),"window frame texture");
             timestamp=frame.SystemRelativeTime().count();

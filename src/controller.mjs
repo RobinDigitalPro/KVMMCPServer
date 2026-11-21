@@ -3,12 +3,13 @@ import { HidSession } from './session.mjs';
 import { NativeTransport } from './native-transport.mjs';
 import { parseTool } from './tools.mjs';
 import { MediaBuffer } from './media-buffer.mjs';
+import {BitmapTracking} from './bitmap-tracking.mjs';
 
 const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 export class DesktopController {
   #session; #transport; #store; #simulated; #stopped; #owner; #clients = new Map(); #captures = new Map(); #lastAction; #timer; #heartbeat; #closing = false; #stopPromise; #reports = 0;
   #recording; #recordingCleanup;
-  #buffer; #mediaTail = Promise.resolve(); #mediaPending = 0;
+  #buffer; #mediaTail = Promise.resolve(); #mediaPending = 0;#tracking;
   constructor({ transport, simulated, store, stopped }) {
     this.#transport = transport; this.#simulated = simulated; this.#store = store; this.#stopped = stopped;
     if (transport) this.#session = new HidSession(transport);
@@ -22,6 +23,7 @@ export class DesktopController {
       controller.#session = new HidSession(controller.#transport);
       await controller.#transport.ready?.();
       controller.#buffer = new MediaBuffer(controller.#transport, metadata => { void controller.publish({ event: 'buffer_state', bufferId: metadata.bufferId, state: metadata.state, reason: metadata.reason }).catch(() => {}); });
+      controller.#tracking=new BitmapTracking(controller.#transport);
       controller.#recordingCleanup = controller.#transport.onRecording?.(metadata => {
         if (controller.#recording?.recordingId === metadata.recordingId) {
           controller.#recording = { ...controller.#recording, ...metadata };
@@ -59,17 +61,17 @@ export class DesktopController {
     }
     // Recording finalization must never prevent neutral input on disconnect.
     await this.#media(async () => {
-      await Promise.allSettled([this.#recording?.clientId === client ? this.#stopRecording('agent_disconnected') : undefined, this.#buffer?.detach(client)]);
+      await Promise.allSettled([this.#recording?.clientId === client ? this.#stopRecording('agent_disconnected') : undefined, this.#buffer?.detach(client),this.#tracking?.detach(client)]);
     }, true).catch(() => {});
     await this.publish({ event: 'agent_disconnected' });
   }
   status() {
     const native = this.#transport?.status?.();
     const control = this.#session?.status() ?? { owner: null, leaseRemainingMs: 0, operatorStopped: this.#stopped.stopped, faulted: false };
-    return { version: '0.9.1', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
+    return { version: '0.10.0', updatedUtc: new Date().toISOString(), running: !this.#closing, pid: process.pid, simulated: this.#simulated, liveHelperConnected: !this.#simulated && Boolean(this.#transport) && (native?.connected ?? true), native,
       control: { ...control, operatorStopped: this.#stopped.stopped || (!this.#closing && control.operatorStopped), jobId: control.owner ? this.#owner?.jobId ?? null : null, clientId: control.owner ? this.#owner?.client ?? null : null },
       operatorStop: this.#stopped, clients: this.#clients.size, activeCaptures: this.#captures.size, lastAction: this.#lastAction ?? null,
-      screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, mediaBuffer: this.#buffer?.status() ?? { state: 'idle' }, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
+      screenCapture: !this.#simulated && Boolean(this.#transport?.captureAvailable), screenRecording: !this.#simulated && Boolean(this.#transport?.recordingAvailable), recording: this.#recording ?? null, mediaBuffer: this.#buffer?.status() ?? { state: 'idle' },bitmapTracking:this.#tracking?.status()??{state:'idle'}, ...(this.#simulated ? { simulatedReports: this.#reports } : {}), applicationConsumptionVerified: false };
   }
   publish(event) { return this.#store?.publish(this.status(), event) ?? Promise.resolve(); }
   async stop(reason = 'operator_request') {
@@ -81,7 +83,7 @@ export class DesktopController {
     // emergencyStop marks the session synchronously, interrupting split input.
     const release = this.#session?.emergencyStop() ?? Promise.resolve();
     this.#stopPromise = (async () => {
-      const outcomes = await Promise.allSettled([this.#store?.persistStop(this.#stopped.reason), release, this.#media(async () => { await Promise.allSettled([this.#stopRecording(this.#stopped.reason), this.#buffer?.stop('operator_stop')]); }, true)]);
+      const outcomes = await Promise.allSettled([this.#store?.persistStop(this.#stopped.reason), release, this.#media(async () => { await Promise.allSettled([this.#stopRecording(this.#stopped.reason), this.#buffer?.stop('operator_stop'),this.#tracking?.stop('operator_stop')]); }, true)]);
       this.#owner = undefined;
       await this.publish({ event: 'operator_stop', reason: this.#stopped.reason, released: outcomes[1].status === 'fulfilled' });
       if (outcomes[0].status === 'rejected') throw outcomes[0].reason;
@@ -110,6 +112,11 @@ export class DesktopController {
       const args = parseTool(name, rawArgs);
       if (name === 'hid_status') return result(this.status());
       if (name === 'hid_emergency_stop') { await this.stop(); return result({ ok: true, operatorStopped: true, persisted: Boolean(this.#store), simulated: this.#simulated }); }
+      if(name==='locate_tracking'||name==='stop_tracking')return result(await this.#media(async()=>{
+        if(!this.#clients.has(client))throw Error('Connection closed');
+        if(name==='locate_tracking'&&(this.#stopped.stopped||this.#closing))throw Error('Operator stopped this controller');
+        return this.#tracking.call(client,name,args,{signal});
+      }));
       if (name === 'screen_record_status' || name === 'screen_record_stop') {
         if (this.#recording?.clientId !== client || this.#recording.recordingId !== args.recordingId) throw new Error('Recording belongs to another connection or is unknown');
         if (name === 'screen_record_stop') await this.#media(() => this.#stopRecording('requested'));
@@ -159,6 +166,14 @@ export class DesktopController {
           response = { content: [{ type: 'text', text: JSON.stringify(metadata) }, { type: 'image', mimeType: metadata.mimeType ?? 'image/png', data }] };
           action.frameId = metadata.frameId;
         } finally { this.#captures.delete(action.id); }
+      } else if(name==='activate_tracking'||name==='locate_bitmap'){
+        response=result(await this.#media(async()=>{
+          signal?.throwIfAborted();await this.#session.assertLease(args.token);
+          if(this.#stopped.stopped||this.#closing||!this.#clients.has(client))throw Error('Bitmap operation cancelled');
+          const {token,...options}=args;
+          if(name==='activate_tracking')return this.#tracking.start(client,{owner:action.owner,jobId:action.jobId},options,()=>!signal?.aborted&&!this.#stopped.stopped&&!this.#closing&&this.#clients.has(client));
+          const found=await this.#transport.locateBitmap(options);signal?.throwIfAborted();await this.#session.assertLease(args.token);return found;
+        }));
       } else if (name === 'media_buffer_start') {
         response = result(await this.#media(async () => {
           signal?.throwIfAborted();await this.#session.assertLease(args.token);
@@ -232,10 +247,11 @@ export class DesktopController {
     this.#closing = true; clearInterval(this.#timer); clearInterval(this.#heartbeat);
     for (const capture of this.#captures.values()) capture.abort.abort(new Error('Controller shutting down'));
     await this.#session?.emergencyStop().catch(() => {});
-    await this.#media(async () => { await Promise.allSettled([this.#stopRecording('controller_shutdown'),this.#buffer?.stop('operator_stop')]); }, true).catch(() => {});
+    await this.#media(async () => { await Promise.allSettled([this.#stopRecording('controller_shutdown'),this.#buffer?.stop('operator_stop'),this.#tracking?.stop('controller_shutdown')]); }, true).catch(() => {});
     await this.#transport?.close?.().catch(() => {});
     this.#recordingCleanup?.();
     this.#buffer?.close();
+    this.#tracking?.close();
     await this.publish({ event: 'controller_stopped' }); await this.#store?.flush();
   }
 }

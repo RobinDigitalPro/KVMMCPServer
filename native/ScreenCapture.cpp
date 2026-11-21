@@ -74,7 +74,7 @@ static int Number(const std::string& text, int minimum, int maximum) {
 static void Identifier(const std::string& value) {
     if (value.size() != 36 || value.find_first_not_of("0123456789abcdef-") != std::string::npos) throw std::runtime_error("invalid_identifier");
 }
-struct Frame { UINT width = 0, height = 0; std::vector<BYTE> pixels; POINT cursor = {}; bool cursorIncluded = false; std::string desktop="Default",uacPromptId; };
+struct Frame { UINT width = 0, height = 0,originX=0,originY=0,fullWidth=0,fullHeight=0;UINT64 visualSequence=0;LONGLONG capturedTicks=0;std::vector<BYTE> pixels; POINT cursor = {}; bool cursorIncluded = false; std::string desktop="Default",uacPromptId; };
 #include "SecureDesktopCapture.h"
 #include "SystemAudio.h"
 #include "../test/SyntheticSystemAudio.h"
@@ -235,6 +235,7 @@ public:
 
 #include "RecentMedia.h"
 #include "MediaGuard.h"
+#include "BitmapTracking.h"
 
 static Frame BufferFrame(Capture& capture,const Frame& source,const BufferProfile& profile){
     // Fit both dimensions, including portrait displays; never upscale.
@@ -266,6 +267,22 @@ public:
 };
 
 int wmain(int argc, wchar_t** argv) {
+    if(argc==2&&std::wstring(argv[1])==L"self-test-bitmaps"){
+        try{
+            int checks=0;auto require=[&](bool value){if(!value)throw std::runtime_error("bitmap_contract_failed");checks++;};
+            std::vector<BYTE> pixels(16*16*4);for(UINT i=0;i<256;i++){pixels[i*4]=static_cast<BYTE>(i*71);pixels[i*4+1]=static_cast<BYTE>(i*37);pixels[i*4+2]=static_cast<BYTE>(i*13);pixels[i*4+3]=255;}
+            BitmapTemplate bitmap;bitmap.Prepare(16,16,pixels.data(),{0,0},48);Frame image;image.width=image.height=128;image.pixels.assign(128*128*4,23);
+            const auto put=[&](UINT x,UINT y){for(UINT row=0;row<16;row++)memcpy(image.pixels.data()+((y+row)*128+x)*4,pixels.data()+row*16*4,16*4);};
+            put(63,17);auto found=FindBitmap(image,bitmap,.95,.02,false,100);require(found.found&&found.best.x==63&&found.best.y==17&&found.best.score==1);
+            require(FindBitmap(image,bitmap,.95,.02,true,100).found);
+            put(10,75);require(FindBitmap(image,bitmap,.95,.02,false,100).reason=="ambiguous");
+            require(FindBitmap(image,bitmap,.95,.02,false,0).reason=="search_budget");
+            image.pixels.assign(image.pixels.size(),23);require(!FindBitmap(image,bitmap,.95,.02,false,100).found);
+            bool rejected=false;try{bitmap.Prepare(49,16,pixels.data(),{0,0},48);}catch(...){rejected=true;}require(rejected);
+            for(UINT i=0;i<256;i++)pixels[i*4+3]=0;rejected=false;try{bitmap.Prepare(16,16,pixels.data(),{0,0},48);}catch(...){rejected=true;}require(rejected);
+            Emit("{\"ok\":true,\"checks\":"+std::to_string(checks)+",\"inputSent\":false,\"captureOpened\":false}");return 0;
+        }catch(const std::exception& error){Emit("{\"ok\":false,\"error\":"+Json(error.what())+"}");return 1;}
+    }
     if(argc==2&&std::wstring(argv[1])==L"self-test-sources"){
         try{
             int checks=0;auto require=[&](bool value){if(!value)throw std::runtime_error("source_contract_failed");checks++;};
@@ -406,10 +423,12 @@ int wmain(int argc, wchar_t** argv) {
     try {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         Check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "COM"); Check(MFStartup(MF_VERSION), "Media Foundation");
-        Capture capture; Recording recording;std::unique_ptr<RecentMedia> recent;RecentExport exporter;MediaBudget budget;
+        Capture capture; Recording recording;std::unique_ptr<RecentMedia> recent;RecentExport exporter;MediaBudget budget;BitmapTracking tracking;auto trackingProgress=Clock::now();
+        const auto visualMedia=[&](){return recording.active()||(recent&&recent->Active()&&recent->hasVideo);};
+        const auto trackingEvent=[&](const char* type){Emit("{\"type\":"+Json(type)+","+tracking.Status()+","+budget.Status()+"}");};
         const auto bufferEvent=[&](const char* type){if(recent)Emit("{\"type\":"+Json(type)+","+recent->Status()+","+budget.Status()+"}");};
         const auto stopBuffer=[&](const std::string& reason){if(recent&&recent->Active()){recent->Stop(reason);bufferEvent("buffer_state");}};
-        Emit("{\"type\":\"ready\",\"workerPid\":"+std::to_string(GetCurrentProcessId())+",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600,\"systemAudioSupported\":true,\"bufferSupported\":true,\"protocolVersion\":4,"+budget.Status()+"}");
+        Emit("{\"type\":\"ready\",\"workerPid\":"+std::to_string(GetCurrentProcessId())+",\"backend\":\"dxgi-media-foundation\",\"maxRecordingSeconds\":600,\"systemAudioSupported\":true,\"bufferSupported\":true,\"bitmapTrackingSupported\":true,\"protocolVersion\":5,"+budget.Status()+"}");
         HANDLE input = GetStdHandle(STD_INPUT_HANDLE); std::string pending; bool quitting = false; auto lastPing = Clock::now(), progress = lastPing;
         while (!quitting) {
             DWORD available = 0;
@@ -427,7 +446,28 @@ int wmain(int argc, wchar_t** argv) {
                 try {
                     if (args.size() < 2) throw std::runtime_error("invalid_command"); request = Number(args[1], 1, 2147483647); const std::string op = args[0];
                     if (op == "ping" && args.size() == 2) { lastPing = Clock::now(); Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}"); continue; }
-                    if (op == "quit" && args.size() == 2) { recording.Finish("interrupted", "controller_shutdown");stopBuffer("worker_shutdown");exporter.Cancel(); quitting = true; }
+                    if(op=="metrics"&&args.size()==2){budget.CheckUsage();Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,"+budget.Status()+"}");continue;}
+                    if (op == "quit" && args.size() == 2) { tracking.Stop("worker_shutdown");recording.Finish("interrupted", "controller_shutdown");stopBuffer("worker_shutdown");exporter.Cancel(); quitting = true; }
+                    else if(op=="tracking_start"&&args.size()==10){
+                        if(!MediaLimitsActive())throw std::runtime_error("media_resource_limits_required");Identifier(args[2]);Identifier(args[3]);
+                        tracking.Start(capture,root,args[2],args[3],args[4],Number(args[5],800,1000),Number(args[6],1,200),{Number(args[7],-1,47),Number(args[8],-1,47)},Number(args[9],0,1)!=0,visualMedia());
+                        if(!tracking.Active()&&!visualMedia())capture.Reset();
+                        budget=MediaBudget();Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,"+tracking.Status()+","+budget.Status()+"}");continue;
+                    }else if((op=="tracking_locate"||op=="tracking_stop")&&args.size()==3){
+                        if(args[2]!=tracking.Id())throw std::runtime_error("unknown_tracking_id");
+                        if(op=="tracking_stop")tracking.Stop();else tracking.Locate(capture,visualMedia());
+                        if(!tracking.Active()&&!visualMedia())capture.Reset();
+                        Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,"+tracking.Status()+","+budget.Status()+"}");continue;
+                    }else if(op=="bitmap_locate"&&args.size()==9){
+                        Identifier(args[2]);if(RequireConsole()!=L"Default")throw std::runtime_error("default_desktop_required");MediaBudget::Admit();
+                        auto bitmap=LoadBitmap(capture,root/L"templates"/fs::u8path(args[2]+".png"),128,{Number(args[6],-1,127),Number(args[7],-1,127)});
+                        capture.Configure(args[3],visualMedia()||tracking.Pinned());auto image=capture.Grab(Number(args[8],0,1)!=0,100,nullptr,MAXUINT64,8388608);if(image.desktop!="Default")throw std::runtime_error("default_desktop_required");
+                        auto found=FindBitmap(image,bitmap,Number(args[4],800,1000)/1000.0,Number(args[5],1,200)/1000.0,true,150);
+                        std::ostringstream out;out<<"{\"id\":"<<request<<",\"ok\":true,\"found\":"<<(found.found?"true":"false")<<",\"reason\":"<<Json(found.reason)<<",\"position\":";
+                        if(found.found)out<<"{\"x\":"<<found.best.x+bitmap.anchor.x<<",\"y\":"<<found.best.y+bitmap.anchor.y<<"}";else out<<"null";
+                        out<<",\"bounds\":";if(found.found)out<<"{\"x\":"<<found.best.x<<",\"y\":"<<found.best.y<<",\"width\":"<<bitmap.width<<",\"height\":"<<bitmap.height<<"}";else out<<"null";
+                        out<<",\"matchScore\":"<<found.best.score<<",\"secondScore\":"<<found.secondScore<<",\"searchMs\":"<<found.elapsedMs<<",\"searchComplete\":"<<(found.complete?"true":"false")<<",\"inputSent\":false,"<<capture.Metadata(image)<<"}";Emit(out.str());continue;
+                    }
                     else if (op == "stop" && args.size() == 2) recording.Finish("stopped", "requested");
                     else if(op=="buffer_start"&&(args.size()==5||args.size()==6)){
                         if(!MediaLimitsActive())throw std::runtime_error("media_resource_limits_required");
@@ -436,7 +476,7 @@ int wmain(int argc, wchar_t** argv) {
                         if(recent&&recent->Active())throw std::runtime_error("buffer_already_active");
                         Identifier(args[2]);const auto profile=RecentProfile(args[4]);if(args[3]!="audio"&&args[3]!="video"&&args[3]!="combined")throw std::runtime_error("invalid_buffer_mode");
                         if(RequireConsole()!=L"Default")throw std::runtime_error("default_desktop_required");
-                        Frame first,source;std::string sourceInfo="\"source\":null";if(args[3]!="audio"){capture.Configure(args.size()==6?args[5]:"fullscreen",false);source=capture.Grab(true);sourceInfo=capture.Metadata(source);first=BufferFrame(capture,source,profile);}else if(args.size()==6&&args[5]!="none")throw std::runtime_error("audio_has_no_visual_source");
+                        Frame first,source;std::string sourceInfo="\"source\":null";if(args[3]!="audio"){capture.Configure(args.size()==6?args[5]:"fullscreen",tracking.Pinned());source=capture.Grab(true);sourceInfo=capture.Metadata(source);first=BufferFrame(capture,source,profile);}else if(args.size()==6&&args[5]!="none")throw std::runtime_error("audio_has_no_visual_source");
                         recent=std::make_unique<RecentMedia>();recent->sourceWidth=source.width;recent->sourceHeight=source.height;recent->sourceInfo=sourceInfo;
                         budget=MediaBudget();recent->Begin(args[2],args[3],args[4],first);bufferEvent("buffer_state");
                         Emit("{\"id\":"+std::to_string(request)+",\"ok\":true,"+recent->Status()+","+budget.Status()+"}");continue;
@@ -454,17 +494,17 @@ int wmain(int argc, wchar_t** argv) {
                     else if (op == "record" && (args.size() == 7 || args.size() == 8||args.size()==9)) {
                         Identifier(args[2]);const int duration=Number(args[3],1,MaximumSeconds),fps=Number(args[4],1,30),width=Number(args[5],0,3840),bits=Number(args[6],1000000,20000000);const bool audio=args.size()==7||Number(args[7],0,1)!=0;
                         RequireConsole();if(recording.active()||exporter.Busy())throw std::runtime_error("media_busy");stopBuffer("recording_started");budget=MediaBudget();
-                        capture.Configure(args.size()==9?args[8]:"fullscreen",false);recording.Begin(capture, root, args[2],duration,fps,width,bits,audio);
+                        capture.Configure(args.size()==9?args[8]:"fullscreen",tracking.Pinned());recording.Begin(capture, root, args[2],duration,fps,width,bits,audio);
                         Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true," + recording.Status("recording") + "}"); continue;
                     } else if (op == "snapshot" && (args.size() == 6||args.size()==8)) {
                         Identifier(args[2]); const bool jpeg = args[3] == "jpeg"; if (!jpeg && args[3] != "png") throw std::runtime_error("invalid_image_format");
-                        capture.Configure(args.size()==8?args[6]:"fullscreen",recording.active()||(recent&&recent->Active()&&recent->hasVideo));Frame source = capture.Grab(Number(args[5], 0, 1) != 0,args.size()==8?Number(args[7],0,200):0);const std::string metadata=capture.Metadata(source);const auto desktop=source.desktop;Frame frame = capture.Scale(std::move(source), Number(args[4], 0, 3840), false);
+                        capture.Configure(args.size()==8?args[6]:"fullscreen",visualMedia()||tracking.Pinned());Frame source = capture.Grab(Number(args[5], 0, 1) != 0,args.size()==8?Number(args[7],0,200):0);const std::string metadata=capture.Metadata(source);const auto desktop=source.desktop;Frame frame = capture.Scale(std::move(source), Number(args[4], 0, 3840), false);
                         const fs::path output = root / L"captures" / fs::u8path(args[2] + (jpeg ? ".jpg" : ".png")); fs::create_directories(output.parent_path()); capture.Save(frame, output, jpeg); if(Utf8(RequireConsole())!=desktop)throw std::runtime_error("desktop_changed_during_snapshot");
                         DWORD session = 0; ProcessIdToSessionId(GetCurrentProcessId(), &session);
                         std::ostringstream out;out<<"{\"id\":"<<request<<",\"ok\":true,\"frameId\":"<<Json(args[2])<<",\"path\":"<<Json(Utf8(output.wstring()))<<","<<metadata<<","<<capture.ImageMetadata(frame)<<",\"currentSession\":"<<session<<",\"consoleSession\":"<<WTSGetActiveConsoleSessionId()<<",\"display\":"<<Json(capture.WindowSource()?"window":"primary")<<",\"desktop\":"<<Json(frame.desktop)<<",\"uacPromptId\":"<<Json(frame.uacPromptId)<<",\"width\":"<<frame.width<<",\"height\":"<<frame.height<<",\"cursor\":{\"x\":"<<frame.cursor.x<<",\"y\":"<<frame.cursor.y<<"},\"cursorIncludedInImage\":"<<(frame.cursorIncluded?"true":"false")<<",\"mimeType\":"<<Json(jpeg?"image/jpeg":"image/png")<<",\"inputSent\":false}";Emit(out.str());continue;
                     } else throw std::runtime_error("invalid_command");
                     Emit("{\"id\":" + std::to_string(request) + ",\"ok\":true}");
-                } catch (const std::exception& error) { if(!recording.active()&&!(recent&&recent->Active()&&recent->hasVideo))capture.Reset();Emit("{\"id\":" + std::to_string(request) + ",\"ok\":false,\"error\":" + Json(error.what()) + "}"); }
+                } catch (const std::exception& error) { if(!visualMedia()&&!tracking.Pinned())capture.Reset();Emit("{\"id\":" + std::to_string(request) + ",\"ok\":false,\"error\":" + Json(error.what()) + "}"); }
             }
             if (recording.active()) {
                 try {
@@ -489,7 +529,14 @@ int wmain(int argc, wchar_t** argv) {
                     if(now-progress>=std::chrono::seconds(1)){bufferEvent("buffer_progress");progress=now;}
                 }catch(const std::exception& error){stopBuffer(error.what());capture.Reset();}
             }
-            Sleep(5);
+            if(tracking.Active()){
+                const auto before=tracking.State();
+                try{if(Clock::now()-lastPing>std::chrono::seconds(5))throw std::runtime_error("controller_heartbeat_lost");budget.CheckUsage();tracking.Tick(capture);}
+                catch(const std::exception& error){tracking.Stop(error.what());}
+                if(tracking.State()!=before){trackingEvent("tracking_state");if(!visualMedia())capture.Reset();}
+                else if(Clock::now()-trackingProgress>=std::chrono::seconds(1)){trackingEvent("tracking_progress");trackingProgress=Clock::now();}
+            }
+            if(tracking.Active())capture.WaitForFrame(2);else Sleep(5);
         }
         recording.Finish("interrupted", "parent_disconnected");
         stopBuffer("worker_shutdown");exporter.Cancel();

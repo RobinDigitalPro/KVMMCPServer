@@ -25,7 +25,7 @@ export function secureInputDeadline(leaseDeadline, capturedAt, now = Date.now())
 
 export class NativeTransport {
   #child; #pending = new Map(); #id = 0; #fatal; #ready; #resolveReady; #rejectReady; #metadata; #executable; #dataRoot; #onFault; #closing = false; #exit;
-  #captureWorker; #recordingListeners = new Set(); #bufferListeners = new Set(); #mediaError; #inputResetEpoch = 0; #textContext;
+  #captureWorker; #recordingListeners = new Set(); #bufferListeners = new Set(); #trackingListeners=new Set();#mediaError; #inputResetEpoch = 0; #textContext;
   #captureFactory;
   #securePrompt; #secureCapturedAt = 0; #inputDeadline; #secureInputPending = false; #completedSecureClick;
   constructor(executable, { dataRoot, onFault = () => {}, spawnHid = spawn, captureFactory = (exe, root) => new CaptureWorker(exe, root) } = {}) {
@@ -81,11 +81,17 @@ export class NativeTransport {
       worker.on('fault', error => { this.#mediaError = error.message.slice(0,300);if (this.#captureWorker === worker) this.#captureWorker = undefined; });
       worker.on('recording', metadata => { for (const listener of this.#recordingListeners) listener(metadata); });
       worker.on('buffer', metadata => { for (const listener of this.#bufferListeners) listener(metadata); });
+      worker.on('tracking',metadata=>{for(const listener of this.#trackingListeners)listener(metadata);});
     }
     return this.#captureWorker;
   }
   onRecording(listener) { this.#recordingListeners.add(listener); return () => this.#recordingListeners.delete(listener); }
   onBuffer(listener) { this.#bufferListeners.add(listener); return () => this.#bufferListeners.delete(listener); }
+  onTracking(listener){this.#trackingListeners.add(listener);return()=>this.#trackingListeners.delete(listener);}
+  startTracking(options){return this.#screen().startTracking(options);}
+  locateTracking(id){if(!this.#captureWorker)throw Error('Tracking worker is unavailable');return this.#captureWorker.locateTracking(id);}
+  stopTracking(id){return this.#captureWorker?.stopTracking(id)??Promise.resolve(null);}
+  locateBitmap(options){return this.#screen().locateBitmap(options);}
   startBuffer(options) { return this.#screen().startBuffer(options); }
   bufferStatus() { return this.#captureWorker?.bufferStatus() ?? Promise.resolve(null); }
   stopBuffer(reason) { return this.#captureWorker?.stopBuffer(reason) ?? Promise.resolve(null); }

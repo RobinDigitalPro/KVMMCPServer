@@ -110,7 +110,7 @@ For Codex registration, run the supplied installation script as the normal user:
 .\scripts\Install-McpConnection.ps1 -NodePath C:\Tools\node.exe -NativeExecutable D:\AgentData\desktop-hid\native\HidTransport.exe -DataRoot D:\AgentData\desktop-hid
 ```
 
-It registers twenty-three tools and leaves the client's approval policy unchanged.
+It registers twenty-seven tools and leaves the client's approval policy unchanged.
 Reload the client MCP connection if its catalog has not refreshed. A terminal
 launch alone does not attach tools to a chat.
 
@@ -275,6 +275,22 @@ is authorized. Credential entry and unidentified consent controls are refused.
 No automatic RDP/session transfer
 is performed. Use the shared physical console and validate the chosen remote
 viewer separately.
+
+## Bitmap tracking and one-shot locate
+
+Use `activate_tracking` with a lease, source and lossless PNG template (maximum
+48x48) to start one connection-owned CPU tracker. Release the input lease after
+starting if no input is needed. `locate_tracking` returns source-relative XY and
+measurement age; **only when lost** does it perform one full search. Inspect
+`hid_status.bitmapTracking` to check loss without searching. `stop_tracking`
+ends the tracker; disconnect and emergency stop also stop it.
+
+`locate_bitmap` performs a one-shot search with a template up to 128x128. These
+tools only observe pixels, never move or click. The supplied anchor determines
+the returned point; supply the cursor hotspot when that is the intended target.
+Read [bitmap tracking](BITMAP_TRACKING.md) for alpha masks, ambiguity, limits,
+source pinning and timing. A position is an observation, not proof that a game
+processed a subsequent input event.
 
 ## Monitoring and trust boundary
 

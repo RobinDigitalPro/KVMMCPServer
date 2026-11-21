@@ -15,7 +15,7 @@ test('official MCP SDK client discovers and calls the real stdio server', async 
   try {
     await client.connect(transport);
     const catalog = (await client.listTools()).tools;
-    assert.equal(catalog.length, 23);
+    assert.equal(catalog.length, 27);
     assert.ok(['hid_key_down', 'hid_key_up', 'hid_key_press', 'hid_type_text', 'hid_key_chord', 'hid_click'].every(name => catalog.some(tool => tool.name === name)));
     const status = text(await client.callTool({ name: 'hid_status', arguments: {} }));
     assert.equal(status.simulated, true);

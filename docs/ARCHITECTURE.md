@@ -24,7 +24,7 @@ status explicitly reports zero available history. HID transport failures retain
 the independent neutralization, watchdog and persistent-stop behavior below.
 
 The stdio adapter uses the official MCP SDK for message validation, tool schemas,
-protocol compatibility and cancellation. It forwards only the twenty-three declared
+protocol compatibility and cancellation. It forwards only the twenty-seven declared
 desktop tools to a shared local controller. No arbitrary command execution is
 accepted by that controller.
 
@@ -32,7 +32,7 @@ Each adapter has its own internal TCP connection and a server-issued random
 connection ID. A lease binds its opaque token to that connection. Human-readable
 agent, owner and job labels help monitoring; they do not establish identities or
 per-role permissions. All authorized local adapters currently have the same
-twenty-three tools. Windows accounts and the agent's surrounding execution policy
+twenty-seven tools. Windows accounts and the agent's surrounding execution policy
 remain the access boundaries.
 
 The controller binds an ephemeral port on 127.0.0.1 only. Its random 256-bit
@@ -120,3 +120,11 @@ is opened. The source and QPC timestamps feed the same bounded recording clock;
 missing audio falls back explicitly. See SCREEN_CAPTURE.md. The native synthetic
 diagnostic source is selectable only by its standalone self-test CLI, never by
 the MCP record command.
+
+Version 0.10.0 adds one connection-owned CPU bitmap tracker and ad-hoc locate.
+Native Windows graphics supply one owned GPU source, shared with the selected
+screenshot/recording/buffer source. Tracking stages only a 128x128 rectangle to
+CPU and consumes latest observations; it has no encoder or unbounded frame queue.
+The media worker's OS limits also apply to matching. Loss pauses matching; only
+an explicit locate while lost searches the full selected source. The HID helper
+and kernel remain separate. See [tracking lifecycle and limits](BITMAP_TRACKING.md).

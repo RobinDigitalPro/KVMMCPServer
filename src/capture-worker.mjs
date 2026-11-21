@@ -6,10 +6,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { atomicJson, externalRoot } from './state.mjs';
 import {sourceWire} from './capture-source.mjs';
+import {withTemplate} from './bitmap-template.mjs';
 
 // One private pipe to a persistent user-mode worker. No HTTP/video endpoint.
 export class CaptureWorker extends EventEmitter {
-  #child; #ready; #pending = new Map(); #id = 0; #heartbeat; #closed = false; #fatal; #root; #exit; #recording; #writes = Promise.resolve(); #starting; #buffer; #exporting = false;
+  #child; #ready; #pending = new Map(); #id = 0; #heartbeat; #closed = false; #fatal; #root; #exit; #recording; #writes = Promise.resolve(); #starting; #buffer; #exporting = false;#tracking;
   constructor(executable, dataRoot) {
     super(); this.#root = externalRoot(dataRoot);
     this.#child = spawn(executable, ['guarded-serve', '--data-root', this.#root], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -32,6 +33,8 @@ export class CaptureWorker extends EventEmitter {
         else if (value.type === 'fatal') reject(new Error(value.error));
         else if (value.type === 'buffer_state' || value.type === 'buffer_progress') {
           this.#updateBuffer(value);
+        } else if(value.type==='tracking_state'||value.type==='tracking_progress'){
+          this.#updateTracking(value);
         } else if (value.type === 'recording_finished' || value.type === 'recording_progress') {
           this.#update(value);
         } else {
@@ -61,6 +64,7 @@ export class CaptureWorker extends EventEmitter {
     this.#pending.clear();
     if (this.#recording?.state === 'recording') this.#update({ ...this.#recording, state: 'failed', reason: error.message, finalized: false, finishedUtc: new Date().toISOString() });
     if (this.#buffer?.bufferId) this.#updateBuffer({ ...this.#buffer, state: 'failed', reason: 'worker_disconnected', error: error.message.slice(0,300), availableSeconds: 0, bufferedBytes: 0, stoppedUtc: new Date().toISOString() });
+    if(this.#tracking?.trackingId)this.#updateTracking({...this.#tracking,state:'stopped',valid:false,position:null,bounds:null,reason:'worker_disconnected'});
     this.#child.kill(); this.emit('fault', error);
   }
   async #request(operation, fields = [], timeoutMs = 8000) {
@@ -80,6 +84,22 @@ export class CaptureWorker extends EventEmitter {
     const { id, ok, type, ...metadata } = value;
     this.#buffer = metadata; this.emit('buffer', { ...metadata });
   }
+  #updateTracking({id,ok,type,...metadata}){if(this.#tracking?.trackingId===metadata.trackingId&&metadata.revision<this.#tracking.revision)return;this.#tracking=metadata;this.emit('tracking',{...metadata});}
+  async #bitmapOptions(options,maximum,operation){
+    if((await this.#ready).protocolVersion<5)throw Error('Bitmap tools require the current ScreenCapture.exe');
+    const key=sourceWire(options.source),score=Math.round((options.minScore??.95)*1000),margin=Math.round((options.minMargin??.02)*1000);
+    if(!Number.isInteger(score)||score<800||score>1000||!Number.isInteger(margin)||margin<1||margin>200)throw Error('Invalid bitmap score bounds');
+    return withTemplate(this.#root,options,maximum,(templateId,anchor)=>operation(templateId,key,score,margin,anchor));
+  }
+  async startTracking(options){
+    const trackingId=options.trackingId??randomUUID();if(!/^[a-f0-9-]{36}$/.test(trackingId))throw Error('Invalid tracking ID');
+    const value=await this.#bitmapOptions(options,48,(id,key,score,margin,a)=>this.#request('tracking_start',[trackingId,id,key,score,margin,a.x,a.y,options.includeCursor===false?0:1]));
+    this.#updateTracking(value);return {...this.#tracking};
+  }
+  async locateTracking(trackingId){const value=await this.#request('tracking_locate',[trackingId]);this.#updateTracking(value);return {...this.#tracking};}
+  async stopTracking(trackingId){const value=await this.#request('tracking_stop',[trackingId]);this.#updateTracking(value);return {...this.#tracking};}
+  async locateBitmap(options){const {id,ok,...value}=await this.#bitmapOptions(options,128,(id,key,score,margin,a)=>this.#request('bitmap_locate',[id,key,score,margin,a.x,a.y,options.includeCursor===false?0:1]));return value;}
+  async metrics(){return (await this.#request('metrics')).resources;}
   async startBuffer({ bufferId = randomUUID(), mode, profile = 'standard', source }) {
     if (!/^[a-f0-9-]{36}$/.test(bufferId) || !['audio','video','combined'].includes(mode) || !['light','standard','high'].includes(profile)) throw new Error('Invalid buffer options');
     if(mode==='audio'&&source!==undefined)throw new Error('Audio-only buffers cannot select a visual source');

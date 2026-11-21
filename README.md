@@ -7,14 +7,22 @@ and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.9.1** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.10.0** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
 1920x1080 PNG. Client disconnect released held Shift within 34 ms in the first
 shared-controller live test. See [acceptance](docs/ACCEPTANCE.md).
 
-0.9.1 adds one shared fullscreen/window/region source selector for screenshots,
+0.10.0 adds CPU bitmap tracking and one-shot bitmap search. A caller supplies a
+PNG template; one tracker follows new observations within a 128x128 search
+rectangle. Tracking templates are at most 48x48. A lost tracker performs a full
+search only on an explicit locate request. Capture uses native Windows graphics
+APIs and shares an owned GPU source with screenshots/media; only the tracking
+rectangle is copied to CPU. See [tracking usage and limits](docs/BITMAP_TRACKING.md).
+The existing main chat passed the minute-long performance acceptance before release.
+
+0.9.1 added one shared fullscreen/window/region source selector for screenshots,
 recordings and video/combined recent buffers. Region pixels are cropped on the
 GPU before CPU readback; named windows use direct Windows.Graphics.Capture.
 See [capture sources](docs/CAPTURE_SOURCES.md) for geometry, lifecycle and limits.
@@ -43,7 +51,7 @@ any program; there is no separate executable allowlist. Agent authorization for
 the requested host change is still required. See
 [secure desktop setup and limits](docs/SECURE_DESKTOP.md).
 
-The twenty-three tools also include `hid_key_down`, `hid_key_up` and
+The twenty-seven tools also include `hid_key_down`, `hid_key_up` and
 `hid_key_press(durationMs)`. Physical key usages include modifiers (224..231).
 Timed presses run locally for 1..10000 ms, preserve other held keys and release
 on cancellation, disconnect, desktop transition or lease expiry. See
@@ -85,7 +93,8 @@ No ordinary test injects desktop input. Operational data belongs outside source:
 .\scripts\Test-Local.ps1 -DataRoot D:\AgentData\desktop-hid -Function all
 ```
 
-The short suite has 83 JavaScript tests and 23 native HID checks. Stop the live
+The short suite has 97 JavaScript tests and 35 native HID checks. Bitmap,
+source and history self-tests add 7, 11 and 7 native capture checks. Stop the live
 controller before rebuilding its executable. The driver has a separate portable
 C contract (12 checks), package-validation tests (four cases), and explicit live
 acceptance scripts. Live scripts are never included in the ordinary suite.

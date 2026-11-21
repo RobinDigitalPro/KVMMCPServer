@@ -1,5 +1,42 @@
 # Desktop acceptance
 
+## CPU bitmap tracking, 0.10.0
+
+The suite passes 97 JavaScript/MCP tests. Native bitmap/source/history self-tests
+pass 7/11/7 checks without opening capture or injecting input. The native build
+uses C++17 /W4 /WX /O2. No kernel or SYSTEM-service update is required.
+
+The existing main chat executed the real official SDK -> stdio MCP -> isolated
+broker -> native graphics route with a 48x48 software-cursor template and a
+128x128 tracking readback. Over 60 seconds the final binary processed 2,854
+observations (47.57/s), with warm matching p95 0.235 ms and measurement-age p95
+34 ms. Cumulative-counter CPU averaged 0.872% of host capacity; the maximum
+rolling ten-second value was 1.172%, and the short-window peak was 2.070%.
+Private memory peaked at 44.5 MB. Every predefined performance gate passed. The runner checked
+the actual inherited calling-chat identity; it was not overridden by the test.
+
+The same run verified exact source-relative XY, PNG dimension rejection,
+connection ownership, survival after input lease release, recording/buffer
+sharing, decoded media, loss without automatic full search, explicit lost
+recovery, ambiguity, idempotent stop and cleanup on disconnect. HID writes were
+suppressed; these observations do not prove game-specific cursor delivery.
+The adapter was NVIDIA GeForce GTX 1060 6GB with native D3D11 fence completion.
+
+Failed attempts are retained: one restricted-account run could not initialize
+Windows.Graphics.Capture, and early candidates exceeded sustained CPU limits.
+An initial media-sharing test also observed an unexpected extra full search;
+the stricter follow-up and main-chat run assert uninterrupted tracking during
+sharing without calling locate to recover. The source regression also caught
+an immediate-minimize cached-frame return: full-source requests now validate
+window state directly, while ROI tracking keeps its bounded periodic health
+check. All 13 capture-source regression cases passed, including the nine
+snapshot/recording/buffer pixel combinations. Main-chat evidence is stored outside
+the repository under tests/tracking-0.10/main-acceptance-final; source regression
+evidence is in final-capture-regression-2. These measurements
+describe this workstation and fixture, not every application or hardware setup.
+
+See [bitmap API, limits and reproduction](BITMAP_TRACKING.md).
+
 ## Capture sources, 0.9.1
 
 The JavaScript/MCP suite passes 94 tests. Native source-contract self-tests pass

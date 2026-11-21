@@ -61,5 +61,5 @@ public:
         if(system.ullAvailPhys<256ULL*1024*1024)throw std::runtime_error("system_memory_pressure");
         hot=cpuPercent>=4.5?hot+1:0;if(stopOnCpu&&hot>=5)throw std::runtime_error("cpu_pressure");
     }
-    std::string Status()const{std::ostringstream out;out<<"\"resources\":{\"privateBytes\":"<<privateBytes<<",\"cpuPercent\":"<<cpuPercent<<",\"cpuHardCapPercent\":5,\"privateCommitLimitBytes\":"<<MediaCommitLimit<<",\"limitsActive\":"<<(MediaLimitsActive()?"true":"false")<<"}";return out.str();}
+    std::string Status()const{std::ostringstream out;out<<"\"resources\":{\"privateBytes\":"<<privateBytes<<",\"cpuPercent\":"<<cpuPercent<<",\"cpuHardCapPercent\":5,\"privateCommitLimitBytes\":"<<MediaCommitLimit<<",\"cpuTime100ns\":"<<Cpu()<<",\"cpuSampleTicks100ns\":"<<FrameQpc()<<",\"logicalProcessors\":"<<std::max<DWORD>(1,GetActiveProcessorCount(ALL_PROCESSOR_GROUPS))<<",\"limitsActive\":"<<(MediaLimitsActive()?"true":"false")<<"}";return out.str();}
 };
