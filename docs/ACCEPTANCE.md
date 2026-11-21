@@ -12,7 +12,21 @@ file survive the retry; the MCP never calls the local operator resume function.
 The Windows atomic writer tolerates short EPERM/EACCES/EBUSY replacement locks
 without deleting the existing complete stop record. Helper recovery does not
 change the kernel HID driver or the optional Secure Desktop Windows service.
-Live recovery verification is recorded separately after installation.
+Live verification recovered the existing heartbeat_timeout through an official
+MCP client. The controller stayed running while a new non-administrator helper
+started, acknowledged three pings and confirmed neutralization. A new lease
+and 640-pixel JPEG screenshot succeeded, followed by lease release. A second
+restart call returned alreadyHealthy without replacing either process. No key
+or mouse action was sent to the VM. The installed kernel driver was unchanged.
+
+After the explicit MCP Servers Restart in Codex, the existing main chat saw
+all 28 tools and independently verified the healthy no-op with unchanged
+controller/helper process IDs. Toggling a server alone had retained the old
+27-tool catalog; the full adapter-catalog refresh resolved that cache.
+
+Private live receipts are under dataRoot/tests/recovery-0.11. Helper recovery
+does not repair the NVIDIA/GPU timeout that triggered the original missed
+heartbeat; that remains a separate host graphics investigation.
 
 ## CPU bitmap tracking, 0.10.0
 
