@@ -16,8 +16,8 @@ $taskCapture = [IO.Path]::GetFullPath($CaptureExecutable)
 foreach ($taskValue in @($taskConfig.sourceRoot,$taskConfig.dataRoot,$taskConfig.nativeExecutable,$taskConfig.nodeExecutable,$CaptureExecutable)) { if (-not [IO.Path]::IsPathRooted($taskValue)) { throw 'Deployment paths must be absolute' } }
 if (-not (Test-Path -LiteralPath (Join-Path $taskTarget 'src\mcp.mjs')) -or -not (Test-Path -LiteralPath $taskCapture) -or [IO.Path]::GetFileName($taskCapture) -ne 'ScreenCapture.exe') { throw 'Expected installed source and reviewed ScreenCapture.exe' }
 $taskCandidateVersion = (Get-Content -LiteralPath (Join-Path $taskSource 'package.json') -Raw | ConvertFrom-Json).version
-if ($taskCandidateVersion -notin @('0.3.0','0.4.0','0.5.0','0.6.0','0.7.0','0.7.1','0.7.2','0.8.0','0.8.1','0.9.0','0.9.1','0.10.0')) { throw 'This updater expects a reviewed source release from 0.3.0 through 0.10.0' }
-if ($taskCandidateVersion -in @('0.5.0','0.6.0','0.7.0','0.7.1','0.7.2','0.8.0','0.8.1','0.9.0','0.9.1','0.10.0') -and (-not $HidExecutable -or -not [IO.Path]::IsPathRooted($HidExecutable) -or [IO.Path]::GetFileName($HidExecutable) -ne 'HidTransport.exe' -or -not (Test-Path -LiteralPath $HidExecutable))) { throw 'This version also requires the matching reviewed -HidExecutable' }
+if ($taskCandidateVersion -notin @('0.3.0','0.4.0','0.5.0','0.6.0','0.7.0','0.7.1','0.7.2','0.8.0','0.8.1','0.9.0','0.9.1','0.10.0','0.11.0')) { throw 'This updater expects a reviewed source release from 0.3.0 through 0.11.0' }
+if ($taskCandidateVersion -in @('0.5.0','0.6.0','0.7.0','0.7.1','0.7.2','0.8.0','0.8.1','0.9.0','0.9.1','0.10.0','0.11.0') -and (-not $HidExecutable -or -not [IO.Path]::IsPathRooted($HidExecutable) -or [IO.Path]::GetFileName($HidExecutable) -ne 'HidTransport.exe' -or -not (Test-Path -LiteralPath $HidExecutable))) { throw 'This version also requires the matching reviewed -HidExecutable' }
 # Validate the allowlist before stopping anything.
 $taskFiles = @(git -c "safe.directory=$taskSource" -C $taskSource ls-files)
 if ($LASTEXITCODE -ne 0 -or $taskFiles.Count -lt 55) { throw 'Run from a complete reviewed Git checkout' }

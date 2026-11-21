@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import {technicalStop,sameStop} from './recovery.mjs';
+import {setTimeout as delay} from 'node:timers/promises';
 
 const run = promisify(execFile);
 export function externalRoot(value) {
@@ -20,7 +22,12 @@ export async function atomicJson(file, value) {
   const handle = await fs.open(temporary, 'wx', 0o600);
   try { await handle.writeFile(JSON.stringify(value, null, 2)); await handle.sync(); }
   finally { await handle.close(); }
-  try { await fs.rename(temporary, file); }
+  try {
+    for(let attempt=0;;attempt++){
+      try{await fs.rename(temporary,file);break;}
+      catch(error){if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(error.code)||attempt>=100)throw error;await delay(10);}
+    }
+  }
   catch (error) { await fs.rm(temporary, { force: true }); throw error; }
 }
 export async function readJson(file) {
@@ -44,10 +51,24 @@ export class StateStore {
   constructor(root) { this.root = externalRoot(root); this.privateRoot = path.join(this.root, 'controller'); }
   async initialize() { await privateDirectory(this.privateRoot); }
   get stopPath() { return path.join(this.privateRoot, 'operator-stop.json'); }
-  async stopState() { return (await readJson(this.stopPath)) ?? { stopped: false }; }
-  persistStop(reason) { return atomicJson(this.stopPath, { stopped: true, reason, stoppedUtc: new Date().toISOString() }); }
+  get manualStopPath() { return path.join(this.privateRoot, 'operator-inhibit.json'); }
+  async stopState() { const manual=await readJson(this.manualStopPath);return manual?.stopped?manual:(await readJson(this.stopPath))??{stopped:false}; }
+  async persistStop(reason,{kind='operator'}={}) {
+    const value={stopped:true,reason,kind,stoppedUtc:new Date().toISOString()};
+    // Recovery never deletes this separate, sticky human-inhibit file.
+    if(kind==='operator')await atomicJson(this.manualStopPath,value);
+    await atomicJson(this.stopPath,value);
+  }
+  async clearTechnicalStop(expected){
+    const current=await this.stopState();
+    if(!technicalStop(current)||!sameStop(current,expected))throw Error('Stop changed; local operator control is required');
+    await atomicJson(this.stopPath,{stopped:false,recoveredUtc:new Date().toISOString(),previousReason:expected.reason});
+    if((await this.stopState()).stopped)throw Error('Operator stopped recovery');
+  }
+  async recoveryState(){return await readJson(path.join(this.privateRoot,'recovery.json'))??{attempts:[]};}
+  saveRecovery(value){return atomicJson(path.join(this.privateRoot,'recovery.json'),value);}
   // Intentionally not exposed through MCP or broker RPC.
-  async resume() { await atomicJson(this.stopPath, { stopped: false, resumedUtc: new Date().toISOString() }); }
+  async resume() { await atomicJson(this.stopPath, { stopped: false, resumedUtc: new Date().toISOString() });await fs.rm(this.manualStopPath,{force:true}); }
   publish(status, event) {
     const operation = this.#tail.then(async () => {
       if (event) await fs.appendFile(path.join(this.root, 'events.jsonl'), JSON.stringify({ utc: new Date().toISOString(), ...event }) + '\n');

@@ -1,5 +1,19 @@
 # Desktop acceptance
 
+## Explicit technical helper recovery, 0.11.0
+
+The full JavaScript/MCP suite passes 107 tests. Recovery tests cover neutral-only
+replacement, obsolete lease rejection, fresh screenshot gating, simultaneous
+requests, bounded durable retries, failed startup, cancellation, stale callback
+generations and manual stop arriving during startup. The official MCP client
+discovers and calls the new tool. Both a manual stop and its separate inhibit
+file survive the retry; the MCP never calls the local operator resume function.
+
+The Windows atomic writer tolerates short EPERM/EACCES/EBUSY replacement locks
+without deleting the existing complete stop record. Helper recovery does not
+change the kernel HID driver or the optional Secure Desktop Windows service.
+Live recovery verification is recorded separately after installation.
+
 ## CPU bitmap tracking, 0.10.0
 
 The suite passes 97 JavaScript/MCP tests. Native bitmap/source/history self-tests

@@ -7,12 +7,17 @@ and a small KMDF/VHF keyboard/mouse
 driver. Project source is MIT; dependency/protocol attribution is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Controller/MCP **0.10.0** uses the official MCP TypeScript SDK 2.4.0. The installed
+Controller/MCP **0.11.0** uses the official MCP TypeScript SDK 2.4.0. The installed
 development driver remains **0.1.0**. Relative and absolute movement, click,
 drag, wheel, keyboard and modifiers were independently observed on the physical
 host. Two official MCP clients shared the controller and received a valid
 1920x1080 PNG. Client disconnect released held Shift within 34 ms in the first
 shared-controller live test. See [acceptance](docs/ACCEPTANCE.md).
+
+0.11.0 adds `hid_try_restart`: explicit, rate-limited recovery after eligible
+technical helper faults, inside the running local controller. Manual emergency
+stops remain latched. Recovery replays no input and requires a new lease plus
+fresh screenshot. See [recovery policy and usage](docs/RECOVERY.md).
 
 0.10.0 adds CPU bitmap tracking and one-shot bitmap search. A caller supplies a
 PNG template; one tracker follows new observations within a 128x128 search

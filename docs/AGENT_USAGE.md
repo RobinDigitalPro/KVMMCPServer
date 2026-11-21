@@ -1,5 +1,15 @@
 # Local agent use
 
+## Recovering a technical helper fault
+
+Inspect `hid_status.recovery`. If eligible, call `hid_try_restart` with `{}`.
+It replaces the stopped input helper inside the same controller, with no service
+operation and no input replay. Acquire a new lease and capture/inspect a fresh
+screenshot before sending input. Old lease tokens are invalid. Never repeat an
+uncertain click or key automatically. Manual stops remain local-operator only;
+retries have a thirty-second cooldown and three-attempt/five-minute limit.
+See [recovery details](RECOVERY.md).
+
 ## Capture source selection
 
 Version 0.9.0 adds the same optional fullscreen/window/region `source` to

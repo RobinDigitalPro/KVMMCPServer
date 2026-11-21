@@ -63,7 +63,7 @@ export class LocalClient {
       };
       const timer = setTimeout(() => {
         this.#socket.destroy(new Error('Local controller request timed out'));
-      }, method === 'call' && params.name === 'hid_type_text' ? 45000 : method === 'call' && params.name === 'media_buffer_export' ? 25000 : method === 'call' && ['hid_key_press', 'hid_key_chord','hid_move_click_relative','hid_drag_relative'].includes(params.name) ? 15000 : 10000);
+      }, method === 'call' && params.name === 'hid_type_text' ? 45000 : method === 'call' && ['media_buffer_export','hid_try_restart'].includes(params.name) ? 25000 : method === 'call' && ['hid_key_press', 'hid_key_chord','hid_move_click_relative','hid_drag_relative'].includes(params.name) ? 15000 : 10000);
       const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
       this.#pending.set(id, { resolve, reject, cleanup });
       signal?.addEventListener('abort', cancel, { once: true });
@@ -87,7 +87,7 @@ export class LocalEndpoint {
   async call(name, args, options) {
     if (this.#closed) throw new Error('MCP adapter is closed');
     if (!this.#client?.connected) {
-      if (!['hid_status', 'hid_acquire', 'hid_emergency_stop'].includes(name)) throw new Error('Controller connection changed; inspect status and acquire a fresh lease. Input was not retried.');
+      if (!['hid_status', 'hid_acquire', 'hid_emergency_stop','hid_try_restart'].includes(name)) throw new Error('Controller connection changed; inspect status and acquire a fresh lease. Input was not retried.');
       await this.connect();
     }
     // Never retry a submitted action: its acknowledgement may have been lost.
