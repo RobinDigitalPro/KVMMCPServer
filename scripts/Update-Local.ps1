@@ -27,7 +27,7 @@ $taskStatusPath = Join-Path $taskData 'live-status.json'
 $taskStatus = if (Test-Path -LiteralPath $taskStatusPath) { Get-Content -LiteralPath $taskStatusPath -Raw | ConvertFrom-Json } else { $null }
 if ($taskStatus -and $taskStatus.running) {
     if ($taskStatus.clients -ne 0 -or $taskStatus.control.owner -or $taskStatus.activeCaptures -ne 0 -or $taskStatus.recording.state -in @('starting','recording','stopping') -or $taskStatus.mediaBuffer.state -in @('starting','buffering','stopping')) { throw 'Controller is in use. Close all MCP clients first; no update was applied.' }
-    if (([DateTime]::UtcNow - [DateTime]::Parse($taskStatus.updatedUtc).ToUniversalTime()).TotalSeconds -gt 3) { throw 'Controller status is stale; inspect it before updating' }
+    if (([DateTime]::UtcNow - ([DateTime]$taskStatus.updatedUtc).ToUniversalTime()).TotalSeconds -gt 3) { throw 'Controller status is stale; inspect it before updating' }
     if ($CheckOnly) { Write-Output 'Controller is idle; no update was applied (CheckOnly).'; return }
     & $taskConfig.nodeExecutable (Join-Path $taskTarget 'src\manage.mjs') stop --data-root $taskData
     if ($LASTEXITCODE -ne 0) { throw 'Normal controller shutdown failed; source was not changed' }
